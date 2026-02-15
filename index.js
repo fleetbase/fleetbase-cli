@@ -721,7 +721,102 @@ async function versionBump (options) {
     }
 }
 
-// Command to handle login
+// Command to handle registration
+async function registerCommand(options) {
+    const registrationApi = 'https://api.fleetbase.io/~registry/v1/developer-account/register';
+    
+    try {
+        // Collect registration information
+        const answers = await prompt([
+            {
+                type: 'input',
+                name: 'username',
+                message: 'Username:',
+                initial: options.username,
+                skip: !!options.username,
+                validate: (value) => {
+                    if (!value || value.length < 3) {
+                        return 'Username must be at least 3 characters';
+                    }
+                    if (!/^[a-zA-Z0-9_-]+$/.test(value)) {
+                        return 'Username can only contain letters, numbers, hyphens, and underscores';
+                    }
+                    return true;
+                }
+            },
+            {
+                type: 'input',
+                name: 'email',
+                message: 'Email:',
+                initial: options.email,
+                skip: !!options.email,
+                validate: (value) => {
+                    if (!value || !value.includes('@')) {
+                        return 'Please enter a valid email address';
+                    }
+                    return true;
+                }
+            },
+            {
+                type: 'password',
+                name: 'password',
+                message: 'Password:',
+                skip: !!options.password,
+                validate: (value) => {
+                    if (!value || value.length < 8) {
+                        return 'Password must be at least 8 characters';
+                    }
+                    return true;
+                }
+            },
+            {
+                type: 'input',
+                name: 'name',
+                message: 'Full Name (optional):',
+                initial: options.name
+            }
+        ]);
+
+        const registrationData = {
+            username: options.username || answers.username,
+            email: options.email || answers.email,
+            password: options.password || answers.password,
+            name: options.name || answers.name || undefined
+        };
+
+        console.log('\nRegistering account...');
+
+        // Make API call to register
+        const response = await axios.post(registrationApi, registrationData);
+
+        if (response.data.status === 'success') {
+            console.log('\n✓ Account created successfully!');
+            console.log('✓ Please check your email to verify your account.');
+            console.log(`\n✓ Once verified, you can login with: flb login -u ${registrationData.username}`);
+        } else {
+            console.error('Registration failed:', response.data.message || 'Unknown error');
+            process.exit(1);
+        }
+    } catch (error) {
+        if (error.response && error.response.data) {
+            const errorData = error.response.data;
+            if (errorData.errors) {
+                console.error('\nRegistration failed with the following errors:');
+                Object.keys(errorData.errors).forEach(field => {
+                    errorData.errors[field].forEach(message => {
+                        console.error(`  - ${field}: ${message}`);
+                    });
+                });
+            } else {
+                console.error('Registration failed:', errorData.message || 'Unknown error');
+            }
+        } else {
+            console.error('Registration failed:', error.message);
+        }
+        process.exit(1);
+    }
+}
+
 function loginCommand (options) {
     const npmLogin = require('npm-cli-login');
     const username = options.username;
@@ -874,6 +969,15 @@ program
     .option('--patch', 'Bump patch version')
     .option('--pre-release [identifier]', 'Add pre-release identifier')
     .action(versionBump);
+
+program
+    .command('register')
+    .description('Register a new Registry Developer Account')
+    .option('-u, --username <username>', 'Username for the registry')
+    .option('-e, --email <email>', 'Email address')
+    .option('-p, --password <password>', 'Password')
+    .option('-n, --name <name>', 'Your full name (optional)')
+    .action(registerCommand);
 
 program
     .command('login')
