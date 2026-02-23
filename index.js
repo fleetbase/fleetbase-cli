@@ -723,7 +723,8 @@ async function versionBump (options) {
 
 // Command to handle registration
 async function registerCommand(options) {
-    const registrationApi = 'https://api.fleetbase.io/~registry/v1/developer-account/register';
+    const host = options.host || 'api.fleetbase.io';
+    const registrationApi = `https://${host}/~registry/v1/developer-account/register`;
     
     try {
         // Collect registration information
@@ -792,7 +793,8 @@ async function registerCommand(options) {
         if (response.data.status === 'success') {
             console.log('\n✓ Account created successfully!');
             console.log('✓ Please check your email to verify your account.');
-            console.log(`\n✓ Once verified, you can login with: flb login -u ${registrationData.username}`);
+            const loginCmd = options.host ? `flb login -u ${registrationData.username} --host ${options.host}` : `flb login -u ${registrationData.username}`;
+            console.log(`\n✓ Once verified, you can login with: ${loginCmd}`);
         } else {
             console.error('Registration failed:', response.data.message || 'Unknown error');
             process.exit(1);
@@ -1181,6 +1183,7 @@ program
     .option('-e, --email <email>', 'Email address')
     .option('-p, --password <password>', 'Password')
     .option('-n, --name <name>', 'Your full name (optional)')
+    .option('-h, --host <host>', 'API host (default: api.fleetbase.io)')
     .action(registerCommand);
 
 program
