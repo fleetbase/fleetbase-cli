@@ -56,6 +56,22 @@ flb set-auth [token] --path /fleetbase
 
 - `-p, --path`: (Optional) The path to the fleetbase instance directory. Defaults to the current directory.
 
+### Login to the Fleetbase Registry
+
+Login to the Fleetbase registry. This command authenticates you with the Fleetbase registry by saving your credentials to your local `.npmrc` file.
+
+```bash
+flb login [options]
+```
+
+- `-u, --username <username>`: Username for the registry.
+- `-p, --password <password>`: Password for the registry.
+- `-e, --email <email>`: Email associated with your account.
+- `-r, --registry <registry>`: Registry URL (default: `https://registry.fleetbase.io`).
+- `--scope <scope>`: Scope for the registry (optional).
+- `--quotes <quotes>`: Quotes option for `npm-cli-login` (optional).
+- `--config-path <configPath>`: Path to the npm config file (optional).
+
 ### Scaffolding a Extension
 
 Fleetbase CLI has the ability to scaffold a starter extension if you intend to develop your own extension. This greatly speeds up the development process as it gives you a correct starting point to build on.
@@ -96,6 +112,52 @@ flb uninstall [extension] --path /fleetbase
 
 - `[extension]`: The name of the extension to install.
 - `-p, --path`: (Optional) The path to the fleetbase instance directory. Defaults to the current directory.
+
+### Bundling a Extension
+
+To bundle a extension, use: 
+
+```bash
+flb bundle
+```
+
+or to bundle and upload the created bundle, use:
+
+```bash
+flb bundle --upload
+```
+
+- `-p, --path <path>`: Path of the Fleetbase extension (default: `.`).
+- `--upload`: After bundling, upload the bundle to the Fleetbase registry using your authentication token.
+- `--auth-token <token>`: Auth token for uploading the bundle (used with `--upload` option).
+- `-r, --registry <registry>`: Registry URL (default: `https://registry.fleetbase.io`).
+
+### Uploading a Extension Bundle
+
+To upload an extension bundle, use:
+
+```bash
+flb bundle-upload
+```
+
+- `[bundleFile]`: Path to the bundle file to upload. If not provided, it will look for the bundle in the current directory.
+- `-p, --path <path>`: Path where the bundle is located (default: `.`).
+- `--auth-token <token>`: Auth token for uploading the bundle. If not provided, the token will be read from the `.npmrc` file.
+- `-r, --registry <registry>`: Registry URL (default: `https://registry.fleetbase.io`).
+
+### Version Bump and Extension
+
+To bump the version on an extension, use:
+
+```bash
+flb version-bump
+```
+
+- `-p, --path <path>`: Path of the Fleetbase extension (default: `.`).
+- `--major`: Bump major version (e.g., `1.0.0` → `2.0.0`).
+- `--minor`: Bump minor version (e.g., `1.0.0` → `1.1.0`).
+- `--patch`: Bump patch version (e.g., `1.0.0` → `1.0.1`). This is the default if no flag is provided.
+- `--pre-release [identifier]`: Add a pre-release identifier (e.g., `1.0.0` → `1.0.0-beta`).
 
 ### Setting a Custom Registry
 
