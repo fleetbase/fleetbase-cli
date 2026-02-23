@@ -832,12 +832,11 @@ async function installFleetbaseCommand(options) {
         await fs.writeJson(configPath, configContent, { spaces: 2 });
         console.log('✔  console/fleetbase.config.json created');
 
-        // Create/update console environment files (.env.development and .env.production)
+        // Update console environment files (.env.development and .env.production)
         console.log('⏳ Updating console environment files...');
         const environmentsDir = path.join(configDir, 'environments');
-        await fs.ensureDir(environmentsDir);
 
-        // Create .env.development
+        // Update .env.development
         const envDevelopmentContent = `API_HOST=http://${host}:8000
 API_NAMESPACE=int/v1
 SOCKETCLUSTER_PATH=/socketcluster/
@@ -849,7 +848,7 @@ OSRM_HOST=https://router.project-osrm.org
         const envDevelopmentPath = path.join(environmentsDir, '.env.development');
         await fs.writeFile(envDevelopmentPath, envDevelopmentContent);
 
-        // Create .env.production
+        // Update .env.production
         const envProductionContent = `API_HOST=https://${host}:8000
 API_NAMESPACE=int/v1
 API_SECURE=true
