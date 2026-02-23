@@ -788,6 +788,8 @@ async function registerCommand(options) {
         };
 
         console.log('\nRegistering account...');
+        console.log(`API Endpoint: ${registrationApi}`);
+        console.log(`Request Data:`, JSON.stringify(registrationData, null, 2));
 
         // Make API call to register
         const response = await axios.post(registrationApi, registrationData);
@@ -802,6 +804,12 @@ async function registerCommand(options) {
             process.exit(1);
         }
     } catch (error) {
+        console.error('\n[DEBUG] Error caught:', error.message);
+        if (error.code) console.error('[DEBUG] Error code:', error.code);
+        if (error.request && !error.response) {
+            console.error('[DEBUG] No response received from server');
+            console.error('[DEBUG] Request was made to:', registrationApi);
+        }
         if (error.response && error.response.data) {
             const errorData = error.response.data;
             if (errorData.errors) {
