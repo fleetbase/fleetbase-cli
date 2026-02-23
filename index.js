@@ -807,9 +807,15 @@ async function registerCommand(options) {
             if (errorData.errors) {
                 console.error('\nRegistration failed with the following errors:');
                 Object.keys(errorData.errors).forEach(field => {
-                    errorData.errors[field].forEach(message => {
-                        console.error(`  - ${field}: ${message}`);
-                    });
+                    const fieldErrors = errorData.errors[field];
+                    // Handle both array and string error formats
+                    if (Array.isArray(fieldErrors)) {
+                        fieldErrors.forEach(message => {
+                            console.error(`  - ${field}: ${message}`);
+                        });
+                    } else {
+                        console.error(`  - ${field}: ${fieldErrors}`);
+                    }
                 });
             } else {
                 console.error('Registration failed:', errorData.message || 'Unknown error');
