@@ -881,18 +881,29 @@ async function installFleetbaseCommand(options) {
         console.log(`   HTTPS: ${useHttps}`);
 
         // Check if directory exists and has Fleetbase files
-        if (!await fs.pathExists(directory)) {
-            console.error(`\n✖ Directory does not exist: ${directory}`);
-            console.log('\nℹ️  Please clone the Fleetbase repository first:');
-            console.log('   git clone https://github.com/fleetbase/fleetbase.git');
-            process.exit(1);
-        }
-
         const dockerComposePath = path.join(directory, 'docker-compose.yml');
-        if (!await fs.pathExists(dockerComposePath)) {
-            console.error(`\n✖ docker-compose.yml not found in ${directory}`);
-            console.log('\nℹ️  Please ensure you are in the Fleetbase root directory.');
-            process.exit(1);
+        const needsClone = !await fs.pathExists(dockerComposePath);
+
+        if (needsClone) {
+            console.log('\n⏳ Fleetbase repository not found, cloning...');
+            
+            // Ensure parent directory exists
+            await fs.ensureDir(directory);
+            
+            // Clone the repository
+            const { execSync } = require('child_process');
+            try {
+                execSync('git clone https://github.com/fleetbase/fleetbase.git .', {
+                    cwd: directory,
+                    stdio: 'inherit'
+                });
+                console.log('✔  Repository cloned successfully');
+            } catch (error) {
+                console.error('\n✖ Failed to clone repository:', error.message);
+                console.log('\nℹ️  You can manually clone with:');
+                console.log('   git clone https://github.com/fleetbase/fleetbase.git');
+                process.exit(1);
+            }
         }
 
         // Generate APP_KEY
