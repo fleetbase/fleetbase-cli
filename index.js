@@ -723,8 +723,10 @@ async function versionBump (options) {
 
 // Command to handle registration
 async function registerCommand(options) {
-    const host = options.host || 'api.fleetbase.io';
-    const registrationApi = `https://${host}/~registry/v1/developer-account/register`;
+    const host = options.host || 'https://api.fleetbase.io';
+    // Ensure host has protocol, add https:// if missing
+    const apiHost = host.startsWith('http://') || host.startsWith('https://') ? host : `https://${host}`;
+    const registrationApi = `${apiHost}/~registry/v1/developer-account/register`;
     
     try {
         // Collect registration information
@@ -1183,7 +1185,7 @@ program
     .option('-e, --email <email>', 'Email address')
     .option('-p, --password <password>', 'Password')
     .option('-n, --name <name>', 'Your full name (optional)')
-    .option('-h, --host <host>', 'API host (default: api.fleetbase.io)')
+    .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
     .action(registerCommand);
 
 program
