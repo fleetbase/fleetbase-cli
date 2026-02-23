@@ -817,6 +817,199 @@ async function registerCommand(options) {
     }
 }
 
+// Command to install Fleetbase via Docker
+async function installFleetbaseCommand(options) {
+    const crypto = require('crypto');
+    const os = require('os');
+
+    console.log('\n🚀 Fleetbase Installation\n');
+
+    try {
+        // Collect installation parameters
+        const answers = await prompt([
+            {
+                type: 'input',
+                name: 'host',
+                message: 'Enter host or IP address to bind to:',
+                initial: options.host || 'localhost',
+                validate: (value) => {
+                    if (!value) {
+                        return 'Host is required';
+                    }
+                    return true;
+                }
+            },
+            {
+                type: 'select',
+                name: 'environment',
+                message: 'Choose environment:',
+                initial: options.environment === 'production' ? 1 : 0,
+                choices: [
+                    { title: 'Development', value: 'development' },
+                    { title: 'Production', value: 'production' }
+                ]
+            },
+            {
+                type: 'input',
+                name: 'directory',
+                message: 'Installation directory:',
+                initial: options.directory || process.cwd(),
+                validate: (value) => {
+                    if (!value) {
+                        return 'Directory is required';
+                    }
+                    return true;
+                }
+            }
+        ]);
+
+        const host = options.host || answers.host;
+        const environment = options.environment || answers.environment;
+        const directory = options.directory || answers.directory;
+
+        // Determine configuration based on environment
+        const useHttps = environment === 'production';
+        const appDebug = environment === 'development';
+        const scSecure = environment === 'production';
+        const schemeApi = useHttps ? 'https' : 'http';
+        const schemeConsole = useHttps ? 'https' : 'http';
+
+        console.log(`\n📋 Configuration:`);
+        console.log(`   Host: ${host}`);
+        console.log(`   Environment: ${environment}`);
+        console.log(`   Directory: ${directory}`);
+        console.log(`   HTTPS: ${useHttps}`);
+
+        // Check if directory exists and has Fleetbase files
+        if (!await fs.pathExists(directory)) {
+            console.error(`\n✖ Directory does not exist: ${directory}`);
+            console.log('\nℹ️  Please clone the Fleetbase repository first:');
+            console.log('   git clone https://github.com/fleetbase/fleetbase.git');
+            process.exit(1);
+        }
+
+        const dockerComposePath = path.join(directory, 'docker-compose.yml');
+        if (!await fs.pathExists(dockerComposePath)) {
+            console.error(`\n✖ docker-compose.yml not found in ${directory}`);
+            console.log('\nℹ️  Please ensure you are in the Fleetbase root directory.');
+            process.exit(1);
+        }
+
+        // Generate APP_KEY
+        console.log('\n⏳ Generating APP_KEY...');
+        const appKey = 'base64:' + crypto.randomBytes(32).toString('base64');
+        console.log('✔  APP_KEY generated');
+
+        // Create docker-compose.override.yml
+        console.log('⏳ Creating docker-compose.override.yml...');
+        const overrideContent = `services:
+  application:
+    environment:
+      APP_KEY: "${appKey}"
+      CONSOLE_HOST: "${schemeConsole}://${host}:4200"
+      ENVIRONMENT: "${environment}"
+      APP_DEBUG: "${appDebug}"
+`;
+        const overridePath = path.join(directory, 'docker-compose.override.yml');
+        await fs.writeFile(overridePath, overrideContent);
+        console.log('✔  docker-compose.override.yml created');
+
+        // Create console/fleetbase.config.json (for development runtime config)
+        console.log('⏳ Creating console/fleetbase.config.json...');
+        const configDir = path.join(directory, 'console');
+        await fs.ensureDir(configDir);
+        const configContent = {
+            API_HOST: `${schemeApi}://${host}:8000`,
+            SOCKETCLUSTER_HOST: host,
+            SOCKETCLUSTER_PORT: '38000',
+            SOCKETCLUSTER_SECURE: scSecure
+        };
+        const configPath = path.join(configDir, 'fleetbase.config.json');
+        await fs.writeJson(configPath, configContent, { spaces: 2 });
+        console.log('✔  console/fleetbase.config.json created');
+
+        // Update console environment files (.env.development and .env.production)
+        console.log('⏳ Updating console environment files...');
+        const environmentsDir = path.join(configDir, 'environments');
+
+        // Update .env.development
+        const envDevelopmentContent = `API_HOST=http://${host}:8000
+API_NAMESPACE=int/v1
+SOCKETCLUSTER_PATH=/socketcluster/
+SOCKETCLUSTER_HOST=${host}
+SOCKETCLUSTER_SECURE=false
+SOCKETCLUSTER_PORT=38000
+OSRM_HOST=https://router.project-osrm.org
+`;
+        const envDevelopmentPath = path.join(environmentsDir, '.env.development');
+        await fs.writeFile(envDevelopmentPath, envDevelopmentContent);
+
+        // Update .env.production
+        const envProductionContent = `API_HOST=https://${host}:8000
+API_NAMESPACE=int/v1
+API_SECURE=true
+SOCKETCLUSTER_PATH=/socketcluster/
+SOCKETCLUSTER_HOST=${host}
+SOCKETCLUSTER_SECURE=true
+SOCKETCLUSTER_PORT=38000
+OSRM_HOST=https://router.project-osrm.org
+`;
+        const envProductionPath = path.join(environmentsDir, '.env.production');
+        await fs.writeFile(envProductionPath, envProductionContent);
+
+        console.log('✔  Console environment files updated');
+
+        // Start Docker containers
+        console.log('\n⏳ Starting Fleetbase containers...');
+        console.log('   This may take a few minutes on first run...\n');
+
+        exec('docker compose up -d', { cwd: directory, maxBuffer: maxBuffer }, async (error, stdout, stderr) => {
+            if (error) {
+                console.error(`\n✖ Error starting containers: ${error.message}`);
+                if (stderr) console.error(stderr);
+                process.exit(1);
+            }
+
+            console.log(stdout);
+            console.log('✔  Containers started');
+
+            // Wait for database
+            console.log('\n⏳ Waiting for database to be ready...');
+            await new Promise(resolve => setTimeout(resolve, 15000)); // Wait 15 seconds
+            console.log('✔  Database should be ready');
+
+            // Run deploy script
+            console.log('\n⏳ Running deployment script...');
+            exec('docker compose exec -T application bash -c "./deploy.sh"', { cwd: directory, maxBuffer: maxBuffer }, (deployError, deployStdout, deployStderr) => {
+                if (deployError) {
+                    console.error(`\n✖ Error during deployment: ${deployError.message}`);
+                    if (deployStderr) console.error(deployStderr);
+                    console.log('\nℹ️  You may need to run the deployment manually:');
+                    console.log('   docker compose exec application bash -c "./deploy.sh"');
+                } else {
+                    console.log(deployStdout);
+                    console.log('✔  Deployment complete');
+                }
+
+                // Restart containers to ensure all changes are applied
+                exec('docker compose up -d', { cwd: directory }, () => {
+                    console.log('\n🏁 Fleetbase is up!');
+                    console.log(`   API     → ${schemeApi}://${host}:8000`);
+                    console.log(`   Console → ${schemeConsole}://${host}:4200\n`);
+                    console.log('ℹ️  Default credentials:');
+                    console.log('   Email: admin@fleetbase.io');
+                    console.log('   Password: password\n');
+                });
+            });
+        });
+    } catch (error) {
+        console.error('\n✖ Installation failed:', error.message);
+        process.exit(1);
+    }
+}
+
+
+
 function loginCommand (options) {
     const npmLogin = require('npm-cli-login');
     const username = options.username;
@@ -978,6 +1171,14 @@ program
     .option('-p, --password <password>', 'Password')
     .option('-n, --name <name>', 'Your full name (optional)')
     .action(registerCommand);
+
+program
+    .command('install-fleetbase')
+    .description('Install Fleetbase using Docker')
+    .option('--host <host>', 'Host or IP address to bind to (default: localhost)')
+    .option('--environment <environment>', 'Environment: development or production (default: development)')
+    .option('--directory <directory>', 'Installation directory (default: current directory)')
+    .action(installFleetbaseCommand);
 
 program
     .command('login')
