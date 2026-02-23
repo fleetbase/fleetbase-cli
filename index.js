@@ -818,7 +818,7 @@ async function installFleetbaseCommand(options) {
         await fs.writeFile(overridePath, overrideContent);
         console.log('✔  docker-compose.override.yml created');
 
-        // Create console/fleetbase.config.json
+        // Create console/fleetbase.config.json (for development runtime config)
         console.log('⏳ Creating console/fleetbase.config.json...');
         const configDir = path.join(directory, 'console');
         await fs.ensureDir(configDir);
@@ -831,6 +831,38 @@ async function installFleetbaseCommand(options) {
         const configPath = path.join(configDir, 'fleetbase.config.json');
         await fs.writeJson(configPath, configContent, { spaces: 2 });
         console.log('✔  console/fleetbase.config.json created');
+
+        // Create/update console environment files (.env.development and .env.production)
+        console.log('⏳ Updating console environment files...');
+        const environmentsDir = path.join(configDir, 'environments');
+        await fs.ensureDir(environmentsDir);
+
+        // Create .env.development
+        const envDevelopmentContent = `API_HOST=http://${host}:8000
+API_NAMESPACE=int/v1
+SOCKETCLUSTER_PATH=/socketcluster/
+SOCKETCLUSTER_HOST=${host}
+SOCKETCLUSTER_SECURE=false
+SOCKETCLUSTER_PORT=38000
+OSRM_HOST=https://router.project-osrm.org
+`;
+        const envDevelopmentPath = path.join(environmentsDir, '.env.development');
+        await fs.writeFile(envDevelopmentPath, envDevelopmentContent);
+
+        // Create .env.production
+        const envProductionContent = `API_HOST=https://${host}:8000
+API_NAMESPACE=int/v1
+API_SECURE=true
+SOCKETCLUSTER_PATH=/socketcluster/
+SOCKETCLUSTER_HOST=${host}
+SOCKETCLUSTER_SECURE=true
+SOCKETCLUSTER_PORT=38000
+OSRM_HOST=https://router.project-osrm.org
+`;
+        const envProductionPath = path.join(environmentsDir, '.env.production');
+        await fs.writeFile(envProductionPath, envProductionContent);
+
+        console.log('✔  Console environment files updated');
 
         // Start Docker containers
         console.log('\n⏳ Starting Fleetbase containers...');
