@@ -905,7 +905,18 @@ async function verifyCommand(options) {
             console.error('[DEBUG] Response status:', error.response.status);
             console.error('[DEBUG] Response data:', JSON.stringify(error.response.data, null, 2));
             const errorData = error.response.data;
-            console.error('\nVerification failed:', errorData.message || errorData.error || 'Unknown error');
+            
+            // Handle different error response formats
+            let errorMessage = 'Unknown error';
+            if (errorData.message) {
+                errorMessage = errorData.message;
+            } else if (errorData.error) {
+                errorMessage = errorData.error;
+            } else if (errorData.errors && Array.isArray(errorData.errors)) {
+                errorMessage = errorData.errors.join(', ');
+            }
+            
+            console.error('\nVerification failed:', errorMessage);
         } else if (error.request) {
             console.error('[DEBUG] No response received from server');
             console.error('[DEBUG] Request was made to:', verificationApi);
