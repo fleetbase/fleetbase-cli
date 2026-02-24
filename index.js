@@ -796,9 +796,12 @@ async function registerCommand(options) {
 
         if (response.data.status === 'success') {
             console.log('\n✓ Account created successfully!');
-            console.log('✓ Please check your email to verify your account.');
-            const loginCmd = options.host ? `flb login -u ${registrationData.username} --host ${options.host}` : `flb login -u ${registrationData.username}`;
-            console.log(`\n✓ Once verified, you can login with: ${loginCmd}`);
+            console.log('✓ A verification code has been sent to your email.');
+            console.log('\n👉 Next step: Verify your email address');
+            const verifyCmd = `flb verify -e ${registrationData.email}` + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : '');
+            console.log(`   Run: ${verifyCmd}`);
+            const loginCmd = `flb login -u ${registrationData.username}` + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : '');
+            console.log(`\n✓ After verification, login with: ${loginCmd}`);
         } else {
             console.error('Registration failed:', response.data.message || 'Unknown error');
             process.exit(1);
@@ -830,6 +833,65 @@ async function registerCommand(options) {
             }
         } else {
             console.error('Registration failed:', error.message);
+        }
+        process.exit(1);
+    }
+}
+
+// Command to verify developer account email
+async function verifyCommand(options) {
+    console.log('\n📧 Verify Your Registry Developer Account\n');
+
+    try {
+        // Collect verification parameters
+        const answers = await prompt([
+            {
+                type: 'input',
+                name: 'email',
+                message: 'Email address:',
+                initial: options.email,
+                validate: (value) => value ? true : 'Email is required'
+            },
+            {
+                type: 'input',
+                name: 'code',
+                message: 'Verification code (from email):',
+                initial: options.code,
+                validate: (value) => value ? true : 'Verification code is required'
+            }
+        ]);
+
+        const email = options.email || answers.email;
+        const code = options.code || answers.code;
+        const host = options.host || 'https://api.fleetbase.io';
+
+        // Ensure host has protocol
+        const apiHost = host.startsWith('http://') || host.startsWith('https://') 
+            ? host 
+            : `https://${host}`;
+        const verificationApi = `${apiHost}/~registry/v1/developer-account/verify`;
+
+        console.log('\nVerifying account...');
+
+        // Make API call to verify
+        const response = await axios.post(verificationApi, {
+            email: email,
+            code: code
+        });
+
+        if (response.data.status === 'success') {
+            console.log('\n✓ Email verified successfully!');
+            console.log('✓ You can now login with: flb login -u <username>' + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : ''));
+        } else {
+            console.error('Verification failed:', response.data.message || 'Unknown error');
+            process.exit(1);
+        }
+    } catch (error) {
+        if (error.response && error.response.data) {
+            const errorData = error.response.data;
+            console.error('\nVerification failed:', errorData.message || 'Unknown error');
+        } else {
+            console.error('\nVerification failed:', error.message);
         }
         process.exit(1);
     }
@@ -1201,6 +1263,14 @@ program
     .option('-n, --name <name>', 'Your full name (optional)')
     .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
     .action(registerCommand);
+
+program
+    .command('verify')
+    .description('Verify your Registry Developer Account email')
+    .option('-e, --email <email>', 'Email address')
+    .option('-c, --code <code>', 'Verification code from email')
+    .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
+    .action(verifyCommand);
 
 program
     .command('install-fleetbase')
