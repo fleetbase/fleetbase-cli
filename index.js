@@ -899,7 +899,7 @@ async function verifyCommand(options) {
                 console.log('\n🔑 Your Registry Token:');
                 console.log(`   ${response.data.token}`);
                 console.log('\n💡 Save this token securely! You\'ll need it to authenticate with the registry.');
-                console.log('   Use: flb set-auth ' + response.data.token + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : ''));
+                console.log('   Use: flb set-auth ' + response.data.token + (host !== 'https://api.fleetbase.io' ? ` --registry ${host}` : ''));
             }
             
             console.log('\n✓ You can now login with: flb login -u <username>' + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : ''));
@@ -988,7 +988,7 @@ async function generateTokenCommand(options) {
             console.log('\n🔑 Your Registry Token:');
             console.log(`   ${response.data.token}`);
             console.log('\n💡 Save this token securely! You\'ll need it to authenticate with the registry.');
-            console.log('   Use: flb set-auth ' + response.data.token + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : ''));
+            console.log('   Use: flb set-auth ' + response.data.token + (host !== 'https://api.fleetbase.io' ? ` --registry ${host}` : ''));
             console.log('\n⚠️  Note: This replaces any previously generated token.');
         } else {
             console.error('\nToken generation failed:', response.data.message || 'Unknown error');
@@ -1275,9 +1275,9 @@ OSRM_HOST=https://router.project-osrm.org
                     console.log('\n🏁 Fleetbase is up!');
                     console.log(`   API     → ${schemeApi}://${host}:8000`);
                     console.log(`   Console → ${schemeConsole}://${host}:4200\n`);
-                    console.log('ℹ️  Default credentials:');
-                    console.log('   Email: admin@fleetbase.io');
-                    console.log('   Password: password\n');
+                    console.log('ℹ️  Next steps:');
+                    console.log('   1. Open the Console URL in your browser');
+                    console.log('   2. Complete the onboarding process to create your admin account\n');
                 });
             });
         });
