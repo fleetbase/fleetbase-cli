@@ -937,6 +937,87 @@ async function verifyCommand(options) {
     }
 }
 
+// Command to generate or regenerate registry token
+async function generateTokenCommand(options) {
+    console.log('\n🔑 Generate Registry Token\n');
+
+    try {
+        let email = options.email;
+        let password = options.password;
+        const host = options.host || 'https://api.fleetbase.io';
+
+        // Prompt for credentials if not provided
+        if (!email || !password) {
+            const answers = await prompt([
+                {
+                    type: 'input',
+                    name: 'email',
+                    message: 'Email address:',
+                    initial: email,
+                    skip: () => !!email,
+                    validate: (value) => value ? true : 'Email is required'
+                },
+                {
+                    type: 'password',
+                    name: 'password',
+                    message: 'Password:',
+                    skip: () => !!password,
+                    validate: (value) => value ? true : 'Password is required'
+                }
+            ]);
+            email = email || answers.email;
+            password = password || answers.password;
+        }
+
+        // Ensure host has protocol
+        const apiHost = host.startsWith('http://') || host.startsWith('https://') 
+            ? host 
+            : `https://${host}`;
+        const generateTokenApi = `${apiHost}/~registry/v1/developer-account/generate-token`;
+
+        console.log('\nGenerating token...');
+
+        // Make API call to generate token
+        const response = await axios.post(generateTokenApi, {
+            email: email,
+            password: password
+        });
+
+        if (response.data.status === 'success') {
+            console.log('\n✓ ' + response.data.message);
+            console.log('\n🔑 Your Registry Token:');
+            console.log(`   ${response.data.token}`);
+            console.log('\n💡 Save this token securely! You\'ll need it to authenticate with the registry.');
+            console.log('   Use: flb set-auth ' + response.data.token + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : ''));
+            console.log('\n⚠️  Note: This replaces any previously generated token.');
+        } else {
+            console.error('\nToken generation failed:', response.data.message || 'Unknown error');
+            process.exit(1);
+        }
+    } catch (error) {
+        if (error.response) {
+            const errorData = error.response.data;
+            
+            // Handle different error response formats
+            let errorMessage = 'Unknown error';
+            if (errorData.message) {
+                errorMessage = errorData.message;
+            } else if (errorData.error) {
+                errorMessage = errorData.error;
+            } else if (errorData.errors && Array.isArray(errorData.errors)) {
+                errorMessage = errorData.errors.join(', ');
+            }
+            
+            console.error('\nToken generation failed:', errorMessage);
+        } else if (error.request) {
+            console.error('\nToken generation failed: No response from server');
+        } else {
+            console.error('\nToken generation failed:', error.message);
+        }
+        process.exit(1);
+    }
+}
+
 // Command to resend verification code
 async function resendVerificationCommand(options) {
     console.log('\n📧 Resend Verification Code\n');
@@ -1385,6 +1466,14 @@ program
     .option('-e, --email <email>', 'Email address')
     .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
     .action(resendVerificationCommand);
+
+program
+    .command('generate-token')
+    .description('Generate or regenerate your registry authentication token')
+    .option('-e, --email <email>', 'Email address')
+    .option('-p, --password <password>', 'Password')
+    .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
+    .action(generateTokenCommand);
 
 program
     .command('install-fleetbase')
