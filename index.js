@@ -893,7 +893,16 @@ async function verifyCommand(options) {
 
         if (response.data.status === 'success') {
             console.log('\n✓ Email verified successfully!');
-            console.log('✓ You can now login with: flb login -u <username>' + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : ''));
+            
+            // Display registry token if provided
+            if (response.data.token) {
+                console.log('\n🔑 Your Registry Token:');
+                console.log(`   ${response.data.token}`);
+                console.log('\n💡 Save this token securely! You\'ll need it to authenticate with the registry.');
+                console.log('   Use: flb set-auth ' + response.data.token + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : ''));
+            }
+            
+            console.log('\n✓ You can now login with: flb login -u <username>' + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : ''));
         } else {
             console.error('\nVerification failed:', response.data.message || 'Unknown error');
             process.exit(1);
