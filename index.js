@@ -928,6 +928,73 @@ async function verifyCommand(options) {
     }
 }
 
+// Command to resend verification code
+async function resendVerificationCommand(options) {
+    console.log('\n📧 Resend Verification Code\n');
+
+    try {
+        let email = options.email;
+        const host = options.host || 'https://api.fleetbase.io';
+
+        // Prompt for email if not provided
+        if (!email) {
+            const answers = await prompt([
+                {
+                    type: 'input',
+                    name: 'email',
+                    message: 'Email address:',
+                    validate: (value) => value ? true : 'Email is required'
+                }
+            ]);
+            email = answers.email;
+        }
+
+        // Ensure host has protocol
+        const apiHost = host.startsWith('http://') || host.startsWith('https://') 
+            ? host 
+            : `https://${host}`;
+        const resendApi = `${apiHost}/~registry/v1/developer-account/resend-verification`;
+
+        console.log('\nResending verification code...');
+
+        // Make API call to resend
+        const response = await axios.post(resendApi, {
+            email: email
+        });
+
+        if (response.data.status === 'success') {
+            console.log('\n✓ Verification code sent!');
+            console.log('✓ Check your email for the new verification code.');
+            console.log('\n👉 Once you receive it, run:');
+            console.log(`   flb verify -e ${email}` + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : ''));
+        } else {
+            console.error('\nFailed to resend:', response.data.message || 'Unknown error');
+            process.exit(1);
+        }
+    } catch (error) {
+        if (error.response) {
+            const errorData = error.response.data;
+            
+            // Handle different error response formats
+            let errorMessage = 'Unknown error';
+            if (errorData.message) {
+                errorMessage = errorData.message;
+            } else if (errorData.error) {
+                errorMessage = errorData.error;
+            } else if (errorData.errors && Array.isArray(errorData.errors)) {
+                errorMessage = errorData.errors.join(', ');
+            }
+            
+            console.error('\nFailed to resend:', errorMessage);
+        } else if (error.request) {
+            console.error('\nFailed to resend: No response from server');
+        } else {
+            console.error('\nFailed to resend:', error.message);
+        }
+        process.exit(1);
+    }
+}
+
 // Command to install Fleetbase via Docker
 async function installFleetbaseCommand(options) {
     const crypto = require('crypto');
@@ -1302,6 +1369,13 @@ program
     .option('-c, --code <code>', 'Verification code from email')
     .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
     .action(verifyCommand);
+
+program
+    .command('resend-verification')
+    .description('Resend verification code to your email')
+    .option('-e, --email <email>', 'Email address')
+    .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
+    .action(resendVerificationCommand);
 
 program
     .command('install-fleetbase')
