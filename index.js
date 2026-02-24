@@ -721,7 +721,554 @@ async function versionBump (options) {
     }
 }
 
-// Command to handle login
+// Command to handle registration
+async function registerCommand(options) {
+    const host = options.host || 'https://api.fleetbase.io';
+    // Ensure host has protocol, add https:// if missing
+    const apiHost = host.startsWith('http://') || host.startsWith('https://') ? host : `https://${host}`;
+    const registrationApi = `${apiHost}/~registry/v1/developer-account/register`;
+    
+    try {
+        // Collect registration information
+        const answers = await prompt([
+            {
+                type: 'input',
+                name: 'username',
+                message: 'Username:',
+                initial: options.username,
+                skip: !!options.username,
+                validate: (value) => {
+                    if (!value || value.length < 3) {
+                        return 'Username must be at least 3 characters';
+                    }
+                    if (!/^[a-zA-Z0-9_-]+$/.test(value)) {
+                        return 'Username can only contain letters, numbers, hyphens, and underscores';
+                    }
+                    return true;
+                }
+            },
+            {
+                type: 'input',
+                name: 'email',
+                message: 'Email:',
+                initial: options.email,
+                skip: !!options.email,
+                validate: (value) => {
+                    if (!value || !value.includes('@')) {
+                        return 'Please enter a valid email address';
+                    }
+                    return true;
+                }
+            },
+            {
+                type: 'password',
+                name: 'password',
+                message: 'Password:',
+                skip: !!options.password,
+                validate: (value) => {
+                    if (!value || value.length < 8) {
+                        return 'Password must be at least 8 characters';
+                    }
+                    return true;
+                }
+            },
+            {
+                type: 'input',
+                name: 'name',
+                message: 'Full Name (optional):',
+                initial: options.name
+            }
+        ]);
+
+        const registrationData = {
+            username: options.username || answers.username,
+            email: options.email || answers.email,
+            password: options.password || answers.password,
+            name: options.name || answers.name || undefined
+        };
+
+        console.log('\nRegistering account...');
+
+        // Make API call to register
+        const response = await axios.post(registrationApi, registrationData);
+
+        if (response.data.status === 'success') {
+            console.log('\n✓ Account created successfully!');
+            console.log('✓ A verification code has been sent to your email.');
+            console.log('\n👉 Next step: Verify your email address');
+            const verifyCmd = `flb verify -e ${registrationData.email}` + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : '');
+            console.log(`   Run: ${verifyCmd}`);
+            const loginCmd = `flb login -u ${registrationData.username}` + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : '');
+            console.log(`\n✓ After verification, login with: ${loginCmd}`);
+        } else {
+            console.error('Registration failed:', response.data.message || 'Unknown error');
+            process.exit(1);
+        }
+    } catch (error) {
+        if (error.response && error.response.data) {
+            const errorData = error.response.data;
+            if (errorData.errors) {
+                console.error('\nRegistration failed with the following errors:');
+                Object.keys(errorData.errors).forEach(field => {
+                    const fieldErrors = errorData.errors[field];
+                    // Handle both array and string error formats
+                    if (Array.isArray(fieldErrors)) {
+                        fieldErrors.forEach(message => {
+                            console.error(`  - ${field}: ${message}`);
+                        });
+                    } else {
+                        console.error(`  - ${field}: ${fieldErrors}`);
+                    }
+                });
+            } else {
+                console.error('Registration failed:', errorData.message || 'Unknown error');
+            }
+        } else {
+            console.error('Registration failed:', error.message);
+        }
+        process.exit(1);
+    }
+}
+
+// Command to verify developer account email
+async function verifyCommand(options) {
+    console.log('\n📧 Verify Your Registry Developer Account\n');
+
+    try {
+        let email = options.email;
+        let code = options.code;
+        const host = options.host || 'https://api.fleetbase.io';
+
+        // Only prompt if values not provided
+        if (!email || !code) {
+            const answers = await prompt([
+                {
+                    type: 'input',
+                    name: 'email',
+                    message: 'Email address:',
+                    initial: email,
+                    skip: () => !!email,
+                    validate: (value) => value ? true : 'Email is required'
+                },
+                {
+                    type: 'input',
+                    name: 'code',
+                    message: 'Verification code (from email):',
+                    initial: code,
+                    skip: () => !!code,
+                    validate: (value) => value ? true : 'Verification code is required'
+                }
+            ]);
+            email = email || answers.email;
+            code = code || answers.code;
+        }
+
+        // Ensure host has protocol
+        const apiHost = host.startsWith('http://') || host.startsWith('https://') 
+            ? host 
+            : `https://${host}`;
+        const verificationApi = `${apiHost}/~registry/v1/developer-account/verify`;
+
+        console.log('\nVerifying account...');
+
+        // Make API call to verify
+        const response = await axios.post(verificationApi, {
+            email: email,
+            code: code
+        });
+
+        if (response.data.status === 'success') {
+            console.log('\n✓ Email verified successfully!');
+            
+            // Display registry token if provided
+            if (response.data.token) {
+                console.log('\n🔑 Your Registry Token:');
+                console.log(`   ${response.data.token}`);
+                console.log('\n💡 Save this token securely! You\'ll need it to authenticate with the registry.');
+                console.log('   Use: flb set-auth ' + response.data.token + (host !== 'https://api.fleetbase.io' ? ` --registry ${host}` : ''));
+            }
+            
+            console.log('\n✓ You can now login with: flb login -u <username>' + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : ''));
+        } else {
+            console.error('\nVerification failed:', response.data.message || 'Unknown error');
+            process.exit(1);
+        }
+    } catch (error) {
+        if (error.response) {
+            const errorData = error.response.data;
+            
+            // Handle different error response formats
+            let errorMessage = 'Unknown error';
+            if (errorData.message) {
+                errorMessage = errorData.message;
+            } else if (errorData.error) {
+                errorMessage = errorData.error;
+            } else if (errorData.errors && Array.isArray(errorData.errors)) {
+                errorMessage = errorData.errors.join(', ');
+            }
+            
+            console.error('\nVerification failed:', errorMessage);
+        } else if (error.request) {
+            console.error('\nVerification failed: No response from server');
+        } else {
+            console.error('\nVerification failed:', error.message);
+        }
+        process.exit(1);
+    }
+}
+
+// Command to generate or regenerate registry token
+async function generateTokenCommand(options) {
+    console.log('\n🔑 Generate Registry Token\n');
+
+    try {
+        let email = options.email;
+        let password = options.password;
+        const host = options.host || 'https://api.fleetbase.io';
+
+        // Prompt for credentials if not provided
+        if (!email || !password) {
+            const answers = await prompt([
+                {
+                    type: 'input',
+                    name: 'email',
+                    message: 'Email address:',
+                    initial: email,
+                    skip: () => !!email,
+                    validate: (value) => value ? true : 'Email is required'
+                },
+                {
+                    type: 'password',
+                    name: 'password',
+                    message: 'Password:',
+                    skip: () => !!password,
+                    validate: (value) => value ? true : 'Password is required'
+                }
+            ]);
+            email = email || answers.email;
+            password = password || answers.password;
+        }
+
+        // Ensure host has protocol
+        const apiHost = host.startsWith('http://') || host.startsWith('https://') 
+            ? host 
+            : `https://${host}`;
+        const generateTokenApi = `${apiHost}/~registry/v1/developer-account/generate-token`;
+
+        console.log('\nGenerating token...');
+
+        // Make API call to generate token
+        const response = await axios.post(generateTokenApi, {
+            email: email,
+            password: password
+        });
+
+        if (response.data.status === 'success') {
+            console.log('\n✓ ' + response.data.message);
+            console.log('\n🔑 Your Registry Token:');
+            console.log(`   ${response.data.token}`);
+            console.log('\n💡 Save this token securely! You\'ll need it to authenticate with the registry.');
+            console.log('   Use: flb set-auth ' + response.data.token + (host !== 'https://api.fleetbase.io' ? ` --registry ${host}` : ''));
+            console.log('\n⚠️  Note: This replaces any previously generated token.');
+        } else {
+            console.error('\nToken generation failed:', response.data.message || 'Unknown error');
+            process.exit(1);
+        }
+    } catch (error) {
+        if (error.response) {
+            const errorData = error.response.data;
+            
+            // Handle different error response formats
+            let errorMessage = 'Unknown error';
+            if (errorData.message) {
+                errorMessage = errorData.message;
+            } else if (errorData.error) {
+                errorMessage = errorData.error;
+            } else if (errorData.errors && Array.isArray(errorData.errors)) {
+                errorMessage = errorData.errors.join(', ');
+            }
+            
+            console.error('\nToken generation failed:', errorMessage);
+        } else if (error.request) {
+            console.error('\nToken generation failed: No response from server');
+        } else {
+            console.error('\nToken generation failed:', error.message);
+        }
+        process.exit(1);
+    }
+}
+
+// Command to resend verification code
+async function resendVerificationCommand(options) {
+    console.log('\n📧 Resend Verification Code\n');
+
+    try {
+        let email = options.email;
+        const host = options.host || 'https://api.fleetbase.io';
+
+        // Prompt for email if not provided
+        if (!email) {
+            const answers = await prompt([
+                {
+                    type: 'input',
+                    name: 'email',
+                    message: 'Email address:',
+                    validate: (value) => value ? true : 'Email is required'
+                }
+            ]);
+            email = answers.email;
+        }
+
+        // Ensure host has protocol
+        const apiHost = host.startsWith('http://') || host.startsWith('https://') 
+            ? host 
+            : `https://${host}`;
+        const resendApi = `${apiHost}/~registry/v1/developer-account/resend-verification`;
+
+        console.log('\nResending verification code...');
+
+        // Make API call to resend
+        const response = await axios.post(resendApi, {
+            email: email
+        });
+
+        if (response.data.status === 'success') {
+            console.log('\n✓ Verification code sent!');
+            console.log('✓ Check your email for the new verification code.');
+            console.log('\n👉 Once you receive it, run:');
+            console.log(`   flb verify -e ${email}` + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : ''));
+        } else {
+            console.error('\nFailed to resend:', response.data.message || 'Unknown error');
+            process.exit(1);
+        }
+    } catch (error) {
+        if (error.response) {
+            const errorData = error.response.data;
+            
+            // Handle different error response formats
+            let errorMessage = 'Unknown error';
+            if (errorData.message) {
+                errorMessage = errorData.message;
+            } else if (errorData.error) {
+                errorMessage = errorData.error;
+            } else if (errorData.errors && Array.isArray(errorData.errors)) {
+                errorMessage = errorData.errors.join(', ');
+            }
+            
+            console.error('\nFailed to resend:', errorMessage);
+        } else if (error.request) {
+            console.error('\nFailed to resend: No response from server');
+        } else {
+            console.error('\nFailed to resend:', error.message);
+        }
+        process.exit(1);
+    }
+}
+
+// Command to install Fleetbase via Docker
+async function installFleetbaseCommand(options) {
+    const crypto = require('crypto');
+    const os = require('os');
+
+    console.log('\n🚀 Fleetbase Installation\n');
+
+    try {
+        // Collect installation parameters
+        const answers = await prompt([
+            {
+                type: 'input',
+                name: 'host',
+                message: 'Enter host or IP address to bind to:',
+                initial: options.host || 'localhost',
+                validate: (value) => {
+                    if (!value) {
+                        return 'Host is required';
+                    }
+                    return true;
+                }
+            },
+            {
+                type: 'select',
+                name: 'environment',
+                message: 'Choose environment:',
+                initial: options.environment === 'production' ? 1 : 0,
+                choices: [
+                    { title: 'Development', value: 'development' },
+                    { title: 'Production', value: 'production' }
+                ]
+            },
+            {
+                type: 'input',
+                name: 'directory',
+                message: 'Installation directory:',
+                initial: options.directory || process.cwd(),
+                validate: (value) => {
+                    if (!value) {
+                        return 'Directory is required';
+                    }
+                    return true;
+                }
+            }
+        ]);
+
+        const host = options.host || answers.host;
+        const environment = options.environment || answers.environment;
+        const directory = options.directory || answers.directory;
+
+        // Determine configuration based on environment
+        const useHttps = environment === 'production';
+        const appDebug = environment === 'development';
+        const scSecure = environment === 'production';
+        const schemeApi = useHttps ? 'https' : 'http';
+        const schemeConsole = useHttps ? 'https' : 'http';
+
+        console.log(`\n📋 Configuration:`);
+        console.log(`   Host: ${host}`);
+        console.log(`   Environment: ${environment}`);
+        console.log(`   Directory: ${directory}`);
+        console.log(`   HTTPS: ${useHttps}`);
+
+        // Check if directory exists and has Fleetbase files
+        const dockerComposePath = path.join(directory, 'docker-compose.yml');
+        const needsClone = !await fs.pathExists(dockerComposePath);
+
+        if (needsClone) {
+            console.log('\n⏳ Fleetbase repository not found, cloning...');
+            
+            // Ensure parent directory exists
+            await fs.ensureDir(directory);
+            
+            // Clone the repository
+            const { execSync } = require('child_process');
+            try {
+                execSync('git clone https://github.com/fleetbase/fleetbase.git .', {
+                    cwd: directory,
+                    stdio: 'inherit'
+                });
+                console.log('✔  Repository cloned successfully');
+            } catch (error) {
+                console.error('\n✖ Failed to clone repository:', error.message);
+                console.log('\nℹ️  You can manually clone with:');
+                console.log('   git clone https://github.com/fleetbase/fleetbase.git');
+                process.exit(1);
+            }
+        }
+
+        // Generate APP_KEY
+        console.log('\n⏳ Generating APP_KEY...');
+        const appKey = 'base64:' + crypto.randomBytes(32).toString('base64');
+        console.log('✔  APP_KEY generated');
+
+        // Create docker-compose.override.yml
+        console.log('⏳ Creating docker-compose.override.yml...');
+        const overrideContent = `services:
+  application:
+    environment:
+      APP_KEY: "${appKey}"
+      CONSOLE_HOST: "${schemeConsole}://${host}:4200"
+      ENVIRONMENT: "${environment}"
+      APP_DEBUG: "${appDebug}"
+`;
+        const overridePath = path.join(directory, 'docker-compose.override.yml');
+        await fs.writeFile(overridePath, overrideContent);
+        console.log('✔  docker-compose.override.yml created');
+
+        // Create console/fleetbase.config.json (for development runtime config)
+        console.log('⏳ Creating console/fleetbase.config.json...');
+        const configDir = path.join(directory, 'console');
+        await fs.ensureDir(configDir);
+        const configContent = {
+            API_HOST: `${schemeApi}://${host}:8000`,
+            SOCKETCLUSTER_HOST: host,
+            SOCKETCLUSTER_PORT: '38000',
+            SOCKETCLUSTER_SECURE: scSecure
+        };
+        const configPath = path.join(configDir, 'fleetbase.config.json');
+        await fs.writeJson(configPath, configContent, { spaces: 2 });
+        console.log('✔  console/fleetbase.config.json created');
+
+        // Update console environment files (.env.development and .env.production)
+        console.log('⏳ Updating console environment files...');
+        const environmentsDir = path.join(configDir, 'environments');
+
+        // Update .env.development
+        const envDevelopmentContent = `API_HOST=http://${host}:8000
+API_NAMESPACE=int/v1
+SOCKETCLUSTER_PATH=/socketcluster/
+SOCKETCLUSTER_HOST=${host}
+SOCKETCLUSTER_SECURE=false
+SOCKETCLUSTER_PORT=38000
+OSRM_HOST=https://router.project-osrm.org
+`;
+        const envDevelopmentPath = path.join(environmentsDir, '.env.development');
+        await fs.writeFile(envDevelopmentPath, envDevelopmentContent);
+
+        // Update .env.production
+        const envProductionContent = `API_HOST=https://${host}:8000
+API_NAMESPACE=int/v1
+API_SECURE=true
+SOCKETCLUSTER_PATH=/socketcluster/
+SOCKETCLUSTER_HOST=${host}
+SOCKETCLUSTER_SECURE=true
+SOCKETCLUSTER_PORT=38000
+OSRM_HOST=https://router.project-osrm.org
+`;
+        const envProductionPath = path.join(environmentsDir, '.env.production');
+        await fs.writeFile(envProductionPath, envProductionContent);
+
+        console.log('✔  Console environment files updated');
+
+        // Start Docker containers
+        console.log('\n⏳ Starting Fleetbase containers...');
+        console.log('   This may take a few minutes on first run...\n');
+
+        exec('docker compose up -d', { cwd: directory, maxBuffer: maxBuffer }, async (error, stdout, stderr) => {
+            if (error) {
+                console.error(`\n✖ Error starting containers: ${error.message}`);
+                if (stderr) console.error(stderr);
+                process.exit(1);
+            }
+
+            console.log(stdout);
+            console.log('✔  Containers started');
+
+            // Wait for database
+            console.log('\n⏳ Waiting for database to be ready...');
+            await new Promise(resolve => setTimeout(resolve, 15000)); // Wait 15 seconds
+            console.log('✔  Database should be ready');
+
+            // Run deploy script
+            console.log('\n⏳ Running deployment script...');
+            exec('docker compose exec -T application bash -c "./deploy.sh"', { cwd: directory, maxBuffer: maxBuffer }, (deployError, deployStdout, deployStderr) => {
+                if (deployError) {
+                    console.error(`\n✖ Error during deployment: ${deployError.message}`);
+                    if (deployStderr) console.error(deployStderr);
+                    console.log('\nℹ️  You may need to run the deployment manually:');
+                    console.log('   docker compose exec application bash -c "./deploy.sh"');
+                } else {
+                    console.log(deployStdout);
+                    console.log('✔  Deployment complete');
+                }
+
+                // Restart containers to ensure all changes are applied
+                exec('docker compose up -d', { cwd: directory }, () => {
+                    console.log('\n🏁 Fleetbase is up!');
+                    console.log(`   API     → ${schemeApi}://${host}:8000`);
+                    console.log(`   Console → ${schemeConsole}://${host}:4200\n`);
+                    console.log('ℹ️  Next steps:');
+                    console.log('   1. Open the Console URL in your browser');
+                    console.log('   2. Complete the onboarding process to create your admin account\n');
+                });
+            });
+        });
+    } catch (error) {
+        console.error('\n✖ Installation failed:', error.message);
+        process.exit(1);
+    }
+}
+
+
+
 function loginCommand (options) {
     const npmLogin = require('npm-cli-login');
     const username = options.username;
@@ -874,6 +1421,47 @@ program
     .option('--patch', 'Bump patch version')
     .option('--pre-release [identifier]', 'Add pre-release identifier')
     .action(versionBump);
+
+program
+    .command('register')
+    .description('Register a new Registry Developer Account')
+    .option('-u, --username <username>', 'Username for the registry')
+    .option('-e, --email <email>', 'Email address')
+    .option('-p, --password <password>', 'Password')
+    .option('-n, --name <name>', 'Your full name (optional)')
+    .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
+    .action(registerCommand);
+
+program
+    .command('verify')
+    .description('Verify your Registry Developer Account email')
+    .option('-e, --email <email>', 'Email address')
+    .option('-c, --code <code>', 'Verification code from email')
+    .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
+    .action(verifyCommand);
+
+program
+    .command('resend-verification')
+    .description('Resend verification code to your email')
+    .option('-e, --email <email>', 'Email address')
+    .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
+    .action(resendVerificationCommand);
+
+program
+    .command('generate-token')
+    .description('Generate or regenerate your registry authentication token')
+    .option('-e, --email <email>', 'Email address')
+    .option('-p, --password <password>', 'Password')
+    .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
+    .action(generateTokenCommand);
+
+program
+    .command('install-fleetbase')
+    .description('Install Fleetbase using Docker')
+    .option('--host <host>', 'Host or IP address to bind to (default: localhost)')
+    .option('--environment <environment>', 'Environment: development or production (default: development)')
+    .option('--directory <directory>', 'Installation directory (default: current directory)')
+    .action(installFleetbaseCommand);
 
 program
     .command('login')
