@@ -788,8 +788,6 @@ async function registerCommand(options) {
         };
 
         console.log('\nRegistering account...');
-        console.log(`API Endpoint: ${registrationApi}`);
-        console.log(`Request Data:`, JSON.stringify(registrationData, null, 2));
 
         // Make API call to register
         const response = await axios.post(registrationApi, registrationData);
@@ -807,12 +805,6 @@ async function registerCommand(options) {
             process.exit(1);
         }
     } catch (error) {
-        console.error('\n[DEBUG] Error caught:', error.message);
-        if (error.code) console.error('[DEBUG] Error code:', error.code);
-        if (error.request && !error.response) {
-            console.error('[DEBUG] No response received from server');
-            console.error('[DEBUG] Request was made to:', registrationApi);
-        }
         if (error.response && error.response.data) {
             const errorData = error.response.data;
             if (errorData.errors) {
@@ -878,18 +870,12 @@ async function verifyCommand(options) {
         const verificationApi = `${apiHost}/~registry/v1/developer-account/verify`;
 
         console.log('\nVerifying account...');
-        console.log(`API Endpoint: ${verificationApi}`);
-        console.log(`Email: ${email}`);
-        console.log(`Code: ${code}`);
 
         // Make API call to verify
         const response = await axios.post(verificationApi, {
             email: email,
             code: code
         });
-
-        console.log('\n[DEBUG] Response status:', response.status);
-        console.log('[DEBUG] Response data:', JSON.stringify(response.data, null, 2));
 
         if (response.data.status === 'success') {
             console.log('\n✓ Email verified successfully!');
@@ -908,11 +894,7 @@ async function verifyCommand(options) {
             process.exit(1);
         }
     } catch (error) {
-        console.error('\n[DEBUG] Error caught:', error.message);
-        if (error.code) console.error('[DEBUG] Error code:', error.code);
         if (error.response) {
-            console.error('[DEBUG] Response status:', error.response.status);
-            console.error('[DEBUG] Response data:', JSON.stringify(error.response.data, null, 2));
             const errorData = error.response.data;
             
             // Handle different error response formats
@@ -927,8 +909,6 @@ async function verifyCommand(options) {
             
             console.error('\nVerification failed:', errorMessage);
         } else if (error.request) {
-            console.error('[DEBUG] No response received from server');
-            console.error('[DEBUG] Request was made to:', verificationApi);
             console.error('\nVerification failed: No response from server');
         } else {
             console.error('\nVerification failed:', error.message);
