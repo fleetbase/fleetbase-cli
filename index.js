@@ -1333,7 +1333,7 @@ function displayExtensionsTable(extensions) {
         if (ext.subtitle) {
             console.log(`  ${ext.subtitle}`);
         }
-        const installSlug = ext.publisher?.slug ? `${ext.publisher.slug}/${ext.slug}` : `fleetbase/${ext.slug}`;
+        const installSlug = `fleetbase/${ext.slug}`;
         console.log(`  ${ansi.colorize(ansi.dim, 'Install:')} flb install ${installSlug}  ${ansi.colorize(ansi.dim, `or flb install ${ext.id}`)}`);
 
         if (index < extensions.length - 1) {
