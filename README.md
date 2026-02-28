@@ -11,6 +11,7 @@ FLB (Fleetbase CLI) is a command-line interface tool designed for managing Fleet
 - Automatically convert `composer.json` to `package.json` for PHP packages
 - Scaffold new Fleetbase extensions
 - Set registry token to a Fleetbase instance
+- Search and list available extensions from the registry
 - Install and Uninstall extensions
 - Flexible registry configuration
 
@@ -246,6 +247,54 @@ flb scaffold
 - `-k, --keywords`: The keywords of the extension to scaffold
 - `-n, --namespace`: The PHP Namespace of the extension to scaffold
 - `-r, --repo`: The Repository URL of the extension to scaffold
+
+### Searching for Extensions
+
+Search and list all available extensions from the Fleetbase registry. Supports keyword search, category filtering, and multiple output formats.
+
+```bash
+flb search [query]
+```
+
+Alias: `flb list-extensions`
+
+**Options:**
+- `[query]`: (Optional) Search keyword to filter by name, slug, subtitle, description, or tags
+- `-c, --category <category>`: Filter by category name or slug
+- `-f, --free`: Show only free extensions
+- `--json`: Output results as raw JSON (useful for scripting)
+- `--simple`: Output one extension per line as tab-separated values: `slug`, `name`, `version`, `price`
+- `-h, --host <host>`: API host to fetch extensions from (default: `https://api.fleetbase.io`)
+
+**Examples:**
+```bash
+# List all available extensions
+flb search
+
+# Search by keyword
+flb search routing
+flb search "route optimization"
+
+# Filter by category
+flb search --category telematics
+
+# Show only free extensions
+flb search --free
+
+# Combine filters
+flb search --free --category telematics
+
+# JSON output for scripting
+flb search --json
+flb search routing --json | jq '.[].slug'
+
+# Simple tab-separated output
+flb search --simple
+
+# Search against a self-hosted instance
+flb search --host https://api.myfleetbase.com
+flb search routing --host http://localhost:8000
+```
 
 ### Installing a Extension
 

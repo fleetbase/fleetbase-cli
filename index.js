@@ -16,6 +16,7 @@ const maxBuffer = 1024 * 1024 * 50; // 50MB
 const defaultRegistry = 'https://registry.fleetbase.io';
 const packageLookupApi = 'https://api.fleetbase.io/~registry/v1/lookup';
 const bundleUploadApi = 'https://api.fleetbase.io/~registry/v1/bundle-upload';
+const extensionsListApi = 'https://api.fleetbase.io/~registry/v1/extensions';
 const starterExtensionRepo = 'https://github.com/fleetbase/starter-extension.git';
 
 function publishPackage (packagePath, registry, options = {}) {
@@ -1293,6 +1294,138 @@ function loginCommand (options) {
     }
 }
 
+// Helper: ANSI colour utilities (chalk v5 is ESM-only; use raw ANSI codes in this CJS file)
+const ansi = {
+    reset: '\x1b[0m',
+    bold: '\x1b[1m',
+    dim: '\x1b[2m',
+    green: '\x1b[32m',
+    yellow: '\x1b[33m',
+    cyan: '\x1b[36m',
+    white: '\x1b[37m',
+    brightWhite: '\x1b[97m',
+    colorize: (code, text) => `${code}${text}\x1b[0m`,
+};
+
+// Helper: format extension list for terminal display
+function displayExtensionsTable(extensions) {
+    const count = extensions.length;
+    console.log(ansi.colorize(ansi.bold + ansi.brightWhite, `Found ${count} extension${count !== 1 ? 's' : ''}:\n`));
+
+    extensions.forEach((ext, index) => {
+        const price = ext.payment_required
+            ? ansi.colorize(ansi.yellow, `$${ext.on_sale ? ext.sale_price : ext.price} ${(ext.currency || 'USD').toUpperCase()}`)
+            : ansi.colorize(ansi.green, 'Free');
+
+        const installs = ansi.colorize(ansi.dim, `\u2193 ${ext.installs_count ?? 0}`);
+        const category = ext.category?.name
+            ? ansi.colorize(ansi.cyan, `[${ext.category.name}]`)
+            : '';
+        const version = ansi.colorize(ansi.dim, `v${ext.version || '?'}`);
+        const publisher = ext.publisher?.name
+            ? ansi.colorize(ansi.dim, `by ${ext.publisher.name}`)
+            : '';
+
+        console.log(`${ansi.colorize(ansi.bold + ansi.brightWhite, ext.name)} ${version}  ${price}  ${installs}  ${category}`);
+        console.log(`  ${ansi.colorize(ansi.dim, ext.slug)}  ${publisher}`);
+        if (ext.subtitle) {
+            console.log(`  ${ext.subtitle}`);
+        }
+        console.log(`  ${ansi.colorize(ansi.dim, 'Install:')} flb install ${ext.slug}`);
+
+        if (index < extensions.length - 1) {
+            console.log('');
+        }
+    });
+
+    console.log(ansi.colorize(ansi.dim, '\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'));
+    console.log(ansi.colorize(ansi.dim, `Use ${ansi.colorize(ansi.white, 'flb install <slug>')} to install an extension.`));
+    console.log(ansi.colorize(ansi.dim, `Use ${ansi.colorize(ansi.white, 'flb search --json')} for machine-readable output.\n`));
+}
+
+// Command: search and list available extensions
+async function searchExtensionsCommand(query, options) {
+    const host = options.host || 'https://api.fleetbase.io';
+    const apiHost = host.startsWith('http://') || host.startsWith('https://')
+        ? host
+        : `https://${host}`;
+    const endpoint = `${apiHost}/~registry/v1/extensions`;
+
+    if (!options.json && !options.simple) {
+        console.log('\n\u{1F50D} Searching Fleetbase Extensions...\n');
+    }
+
+    try {
+        const response = await axios.get(endpoint);
+        let extensions = response.data;
+
+        if (!Array.isArray(extensions) || extensions.length === 0) {
+            console.log('No extensions found.');
+            return;
+        }
+
+        // Filter by search query (name, slug, subtitle, description, tags)
+        if (query) {
+            const q = query.toLowerCase();
+            extensions = extensions.filter(ext =>
+                ext.name?.toLowerCase().includes(q) ||
+                ext.slug?.toLowerCase().includes(q) ||
+                ext.subtitle?.toLowerCase().includes(q) ||
+                ext.description?.toLowerCase().includes(q) ||
+                (Array.isArray(ext.tags) && ext.tags.some(t => t.toLowerCase().includes(q)))
+            );
+        }
+
+        // Filter by category
+        if (options.category) {
+            const cat = options.category.toLowerCase();
+            extensions = extensions.filter(ext =>
+                ext.category?.slug?.toLowerCase().includes(cat) ||
+                ext.category?.name?.toLowerCase().includes(cat)
+            );
+        }
+
+        // Filter to free only
+        if (options.free) {
+            extensions = extensions.filter(ext => !ext.payment_required);
+        }
+
+        if (extensions.length === 0) {
+            const qualifier = query || options.category;
+            console.log(`No extensions found${qualifier ? ` matching "${qualifier}"` : ''}.`);
+            return;
+        }
+
+        // JSON output mode
+        if (options.json) {
+            console.log(JSON.stringify(extensions, null, 2));
+            return;
+        }
+
+        // Simple one-per-line output mode (for scripting)
+        if (options.simple) {
+            extensions.forEach(ext => {
+                const price = ext.payment_required ? `$${ext.on_sale ? ext.sale_price : ext.price}` : 'free';
+                console.log(`${ext.slug}\t${ext.name}\tv${ext.version || '?'}\t${price}`);
+            });
+            return;
+        }
+
+        // Default: formatted table output
+        displayExtensionsTable(extensions);
+
+    } catch (error) {
+        if (error.response) {
+            console.error(`\nSearch failed: ${error.response.status} ${error.response.statusText}`);
+        } else if (error.request) {
+            console.error('\nSearch failed: No response from server. Check your --host or network connection.');
+        } else {
+            console.error(`\nSearch failed: ${error.message}`);
+        }
+        process.exit(1);
+    }
+}
+
 program.name('flb').description('CLI tool for managing Fleetbase Extensions').version(`${packageJson.name} ${packageJson.version}`, '-v, --version', 'Output the current version');
 program.option('-r, --registry [url]', 'Specify a fleetbase extension repository', defaultRegistry);
 
@@ -1332,6 +1465,17 @@ program
         console.log(`Using path: ${fleetbasePath}`);
         await installPackage(packageName, fleetbasePath);
     });
+
+program
+    .command('search [query]')
+    .alias('list-extensions')
+    .description('Search and list available Fleetbase extensions')
+    .option('-c, --category <category>', 'Filter by category name or slug')
+    .option('-f, --free', 'Show only free extensions')
+    .option('--json', 'Output results as raw JSON')
+    .option('--simple', 'Output one extension per line: slug, name, version, price (for scripting)')
+    .option('-h, --host <host>', 'API host to fetch extensions from (default: https://api.fleetbase.io)')
+    .action(searchExtensionsCommand);
 
 program
     .command('uninstall [packageName]')
