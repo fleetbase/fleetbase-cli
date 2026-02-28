@@ -1313,8 +1313,10 @@ function displayExtensionsTable(extensions) {
     console.log(ansi.colorize(ansi.bold + ansi.brightWhite, `Found ${count} extension${count !== 1 ? 's' : ''}:\n`));
 
     extensions.forEach((ext, index) => {
+        const rawPrice = ext.on_sale ? ext.sale_price : ext.price;
+        const formattedPrice = (rawPrice / 100).toFixed(2);
         const price = ext.payment_required
-            ? ansi.colorize(ansi.yellow, `$${ext.on_sale ? ext.sale_price : ext.price} ${(ext.currency || 'USD').toUpperCase()}`)
+            ? ansi.colorize(ansi.yellow, `$${formattedPrice} ${(ext.currency || 'USD').toUpperCase()}`)
             : ansi.colorize(ansi.green, 'Free');
 
         const installs = ansi.colorize(ansi.dim, `\u2193 ${ext.installs_count ?? 0}`);
@@ -1406,7 +1408,8 @@ async function searchExtensionsCommand(query, options) {
         // Simple one-per-line output mode (for scripting)
         if (options.simple) {
             extensions.forEach(ext => {
-                const price = ext.payment_required ? `$${ext.on_sale ? ext.sale_price : ext.price}` : 'free';
+                const rawPrice = ext.on_sale ? ext.sale_price : ext.price;
+                const price = ext.payment_required ? `$${(rawPrice / 100).toFixed(2)}` : 'free';
                 console.log(`${ext.slug}\t${ext.name}\tv${ext.version || '?'}\t${price}`);
             });
             return;
