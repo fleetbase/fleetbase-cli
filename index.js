@@ -1331,7 +1331,8 @@ function displayExtensionsTable(extensions) {
         if (ext.subtitle) {
             console.log(`  ${ext.subtitle}`);
         }
-        console.log(`  ${ansi.colorize(ansi.dim, 'Install:')} flb install ${ext.slug}`);
+        const installSlug = ext.publisher?.slug ? `${ext.publisher.slug}/${ext.slug}` : `fleetbase/${ext.slug}`;
+        console.log(`  ${ansi.colorize(ansi.dim, 'Install:')} flb install ${installSlug}  ${ansi.colorize(ansi.dim, `or flb install ${ext.id}`)}`);
 
         if (index < extensions.length - 1) {
             console.log('');
@@ -1339,7 +1340,7 @@ function displayExtensionsTable(extensions) {
     });
 
     console.log(ansi.colorize(ansi.dim, '\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'));
-    console.log(ansi.colorize(ansi.dim, `Use ${ansi.colorize(ansi.white, 'flb install <slug>')} to install an extension.`));
+    console.log(ansi.colorize(ansi.dim, `Use ${ansi.colorize(ansi.white, 'flb install fleetbase/<slug>')} or ${ansi.colorize(ansi.white, 'flb install <extension_id>')} to install an extension.`));
     console.log(ansi.colorize(ansi.dim, `Use ${ansi.colorize(ansi.white, 'flb search --json')} for machine-readable output.\n`));
 }
 
