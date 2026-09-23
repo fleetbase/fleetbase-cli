@@ -159,10 +159,19 @@ flb install-fleetbase
 - `--host <host>`: Host or IP address to bind to (default: `localhost`)
 - `--environment <environment>`: Environment: `development` or `production` (default: `development`)
 - `--directory <directory>`: Installation directory (default: current directory)
+- `--app-name <name>`: Application name (default: `Fleetbase`)
+- `--non-interactive`: Skip every prompt and use the flags above plus safe defaults (CI/CD, scripted installs)
+
+The installer creates an empty `api/.env` (bind-mounted by `docker-compose.yml`) when one does not exist.
 
 **Example:**
 ```bash
 flb install-fleetbase --host 0.0.0.0 --environment production --directory /opt/fleetbase
+```
+
+**Non-interactive example:**
+```bash
+flb install-fleetbase --non-interactive --directory /opt/fleetbase
 ```
 
 ### Publishing a Extension
