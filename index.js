@@ -1112,6 +1112,36 @@ function buildEnvBlock(vars, indent = 6) {
         .join('\n');
 }
 
+/**
+ * Make sure api/.env exists before `docker compose up`.
+ * docker-compose.yml bind-mounts ./api/.env into the application container; when the
+ * file is missing Docker creates a *directory* at that path and Laravel cannot boot.
+ * Values set in docker-compose.override.yml take precedence over this file, so an
+ * empty file with a comment header is the correct default.
+ * @param {string} directory  resolved installation directory
+ */
+async function ensureApiEnvFile(directory) {
+    const envPath = path.join(directory, 'api', '.env');
+    if (await fs.pathExists(envPath)) {
+        const stat = await fs.stat(envPath);
+        if (stat.isDirectory()) {
+            console.error(`\n✖ ${envPath} is a directory (left behind by an earlier "docker compose up" before the file existed).`);
+            console.error('   Remove it and re-run the installer.');
+            process.exit(1);
+        }
+        console.log('✔  api/.env already present');
+        return;
+    }
+    await fs.ensureDir(path.dirname(envPath));
+    await fs.writeFile(envPath, [
+        '# Fleetbase API environment overrides.',
+        '# Runtime configuration comes from docker-compose.override.yml and takes precedence',
+        '# over this file; add per-host secrets or extra overrides here.',
+        '',
+    ].join('\n'));
+    console.log('✔  api/.env created');
+}
+
 // Command to install Fleetbase via Docker
 async function installFleetbaseCommand(options) {
     const crypto = require('crypto');
@@ -1156,8 +1186,15 @@ async function installFleetbaseCommand(options) {
     console.log('✔  Pre-flight checks complete\n');
 
     try {
+        const nonInteractive = !!options.nonInteractive;
+        if (nonInteractive) {
+            console.log('   ℹ  Non-interactive mode: no prompts; flags and safe defaults are used.');
+        }
+
         // ── Step 1: Core installation parameters ────────────────────────────
-        const coreAnswers = await prompt([
+        // Without a TTY (CI, piped stdin) enquirer would block or throw, so in
+        // non-interactive mode every core value comes from a flag or its default.
+        const coreAnswers = nonInteractive ? {} : await prompt([
             {
                 type: 'input',
                 name: 'host',
@@ -1186,14 +1223,21 @@ async function installFleetbaseCommand(options) {
                 type: 'input',
                 name: 'appName',
                 message: 'Application name:',
-                initial: 'Fleetbase',
+                initial: options.appName || 'Fleetbase',
             },
         ]);
 
-        const host        = options.host        || coreAnswers.host;
-        const environment = options.environment || coreAnswers.environment;
-        const directory   = options.directory   || coreAnswers.directory;
-        const appName     = coreAnswers.appName  || 'Fleetbase';
+        const host        = options.host        || coreAnswers.host        || 'localhost';
+        const environment = options.environment || coreAnswers.environment || 'development';
+        const appName     = options.appName     || coreAnswers.appName     || 'Fleetbase';
+        // Resolve so relative paths (and Git Bash style paths on Windows) work for both
+        // the file writes below and the `cwd` handed to docker compose.
+        const directory   = path.resolve(options.directory || coreAnswers.directory || process.cwd());
+
+        if (!['development', 'production'].includes(environment)) {
+            console.error(`\n✖ Invalid environment "${environment}". Use "development" or "production".`);
+            process.exit(1);
+        }
 
         const useHttps     = environment === 'production';
         const appDebug     = environment !== 'production';
@@ -1201,11 +1245,6 @@ async function installFleetbaseCommand(options) {
         const schemeApi    = useHttps ? 'https' : 'http';
         const schemeConsole = useHttps ? 'https' : 'http';
         const isLocalhost      = host === 'localhost' || host === '0.0.0.0' || host === '127.0.0.1';
-        const nonInteractive   = !!options.nonInteractive;
-
-        if (nonInteractive) {
-            console.log('   ℹ  Non-interactive mode: all optional steps will use safe defaults.');
-        }
 
         // ── Step 2: Clone repo if needed ─────────────────────────────────────
         const dockerComposePath = path.join(directory, 'docker-compose.yml');
@@ -1556,6 +1595,9 @@ ${buildEnvBlock(dbEnvVars)}
         ].join('\n'));
 
         console.log('✔  Console configuration files updated');
+
+        // ── Step 10b: Ensure api/.env exists (bind-mounted by docker-compose.yml) ──
+        await ensureApiEnvFile(directory);
 
         // ── Step 11: Start containers ─────────────────────────────────────────
         console.log('\n⏳ Starting Fleetbase containers...');
@@ -1998,7 +2040,8 @@ program
     .option('--host <host>', 'Host or IP address to bind to (default: localhost)')
     .option('--environment <environment>', 'Environment: development or production (default: development)')
     .option('--directory <directory>', 'Installation directory (default: current directory)')
-    .option('--non-interactive', 'Skip all optional prompts and use safe defaults (useful for CI/CD)')
+    .option('--app-name <name>', 'Application name (default: Fleetbase)')
+    .option('--non-interactive', 'Skip every prompt; use flags and safe defaults (useful for CI/CD)')
     .action(installFleetbaseCommand);
 
 program
