@@ -1142,6 +1142,68 @@ async function ensureApiEnvFile(directory) {
     console.log('✔  api/.env created');
 }
 
+/**
+ * Write the realtime socket auth settings to the project-root .env file.
+ * docker-compose.yml reads SOCKETCLUSTER_AUTH_KEY and SOCKETCLUSTER_AUTH_MODE from this
+ * file (Compose loads it automatically) and hands the same key to the application, queue,
+ * scheduler and socket containers; setting the key in api/.env has no effect.
+ * An existing key of at least 32 characters is kept across re-runs, because changing it
+ * would invalidate every socket token already handed out. An existing mode is kept too.
+ * Other lines in the file are left untouched.
+ * @param {string} directory  resolved installation directory
+ * @returns {Promise<{ envPath: string, mode: string, generated: boolean }>}
+ */
+async function ensureSocketAuthEnv(directory) {
+    const crypto = require('crypto');
+    const envPath = path.join(directory, '.env');
+
+    let lines = [];
+    if (await fs.pathExists(envPath)) {
+        const stat = await fs.stat(envPath);
+        if (stat.isDirectory()) {
+            console.error(`\n✖ ${envPath} is a directory; remove it and re-run the installer.`);
+            process.exit(1);
+        }
+        lines = (await fs.readFile(envPath, 'utf8')).split(/\r?\n/);
+        if (lines.length && lines[lines.length - 1] === '') lines.pop();
+    }
+
+    // Last KEY=value in the file wins (same as Compose), with surrounding quotes stripped.
+    const readValue = (key) => {
+        const pattern = new RegExp(`^\\s*${key}=(.*)$`);
+        let value = '';
+        for (const line of lines) {
+            const match = line.match(pattern);
+            if (match) value = match[1].trim().replace(/^(['"])(.*)\1$/, '$2');
+        }
+        return value;
+    };
+
+    let authKey = readValue('SOCKETCLUSTER_AUTH_KEY');
+    let generated = false;
+    if (authKey.length >= 32) {
+        console.log('✔  Keeping the existing socket auth key from .env');
+    } else {
+        if (authKey) {
+            console.warn('   ⚠  The socket auth key in .env is shorter than 32 characters; generating a new one.');
+        }
+        authKey = crypto.randomBytes(32).toString('hex'); // 64 hex characters
+        generated = true;
+        console.log('✔  Socket auth key generated');
+    }
+    const mode = readValue('SOCKETCLUSTER_AUTH_MODE') || 'enforce';
+
+    const managed = /^\s*SOCKETCLUSTER_AUTH_(KEY|MODE)=/;
+    const output = lines.filter(line => !managed.test(line));
+    output.push(`SOCKETCLUSTER_AUTH_KEY=${authKey}`, `SOCKETCLUSTER_AUTH_MODE=${mode}`, '');
+
+    await fs.writeFile(envPath, output.join('\n'), { mode: 0o600 });
+    try { await fs.chmod(envPath, 0o600); } catch { /* best effort, e.g. on Windows */ }
+    console.log(`✔  Socket auth written to .env (mode: ${mode})`);
+
+    return { envPath, mode, generated };
+}
+
 // Command to install Fleetbase via Docker
 async function installFleetbaseCommand(options) {
     const crypto = require('crypto');
@@ -1464,6 +1526,10 @@ async function installFleetbaseCommand(options) {
         const appKey = 'base64:' + crypto.randomBytes(32).toString('base64');
         console.log('✔  APP_KEY generated');
 
+        // ── Step 8b: Socket authentication key (project-root .env) ───────────
+        console.log('\n⏳ Configuring socket authentication...');
+        const socketAuth = await ensureSocketAuthEnv(directory);
+
         // ── Step 9: Write docker-compose.override.yml ─────────────────────────
         console.log('⏳ Writing docker-compose.override.yml...');
 
@@ -1656,6 +1722,7 @@ ${buildEnvBlock(dbEnvVars)}
                         mailSetup.configure ? `Mail (${mailConfig.mailMailer})` : null,
                         storageChoice.driver !== 'public' ? `Storage (${storageChoice.driver.toUpperCase()})` : null,
                         'WebSocket security (origins restricted)',
+                        `Socket authentication (${socketAuth.mode}; key in .env)`,
                         thirdPartySetup.configure ? 'Third-party APIs' : null,
                     ].filter(Boolean);
 

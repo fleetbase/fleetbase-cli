@@ -164,6 +164,13 @@ flb install-fleetbase
 
 The installer creates an empty `api/.env` (bind-mounted by `docker-compose.yml`) when one does not exist.
 
+It also writes the realtime socket authentication settings to the project-root `.env` (next to `docker-compose.yml`), which Compose passes to the application, queue, scheduler and socket containers:
+
+- `SOCKETCLUSTER_AUTH_KEY`: shared secret between the API and the socket server (64 random hex characters). An existing key of 32+ characters is kept on re-runs, since changing it invalidates socket tokens already issued.
+- `SOCKETCLUSTER_AUTH_MODE`: `off`, `log` or `enforce` (default `enforce`; an existing value is kept).
+
+The socket's allowed origins (`SOCKETCLUSTER_OPTIONS`) are still written to `docker-compose.override.yml`. Setting the auth key only in `api/.env` has no effect.
+
 **Example:**
 ```bash
 flb install-fleetbase --host 0.0.0.0 --environment production --directory /opt/fleetbase
