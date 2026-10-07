@@ -167,9 +167,12 @@ The installer creates an empty `api/.env` (bind-mounted by `docker-compose.yml`)
 It also writes the realtime socket authentication settings to the project-root `.env` (next to `docker-compose.yml`), which Compose passes to the application, queue, scheduler and socket containers:
 
 - `SOCKETCLUSTER_AUTH_KEY`: shared secret between the API and the socket server (64 random hex characters). An existing key of 32+ characters is kept on re-runs, since changing it invalidates socket tokens already issued.
-- `SOCKETCLUSTER_AUTH_MODE`: `off`, `log` or `enforce` (default `enforce`; an existing value is kept).
+- `SOCKETCLUSTER_AUTH_ENABLED`: the API-side switch (default `true` for fresh installs; an existing value is kept). Socket token routes, the authorize endpoint and signed HTTP publishing are active only when this is `true` and the key is valid. With it off, the API publishes over the legacy websocket path.
+- `SOCKETCLUSTER_AUTH_MODE`: `off`, `log` or `enforce` (default `enforce`; an existing value is kept). `enforce` requires `SOCKETCLUSTER_AUTH_ENABLED=true`, because the socket server refuses the legacy publish path; the installer warns when the two disagree.
 
-The socket's allowed origins (`SOCKETCLUSTER_OPTIONS`) are still written to `docker-compose.override.yml`. Setting the auth key only in `api/.env` has no effect.
+Upgrading an existing install with clients that do not fetch socket tokens yet? Roll out in this order: ship clients that fall back when the token route answers 404, then set `SOCKETCLUSTER_AUTH_ENABLED=true` with `SOCKETCLUSTER_AUTH_MODE=log`, then switch to `enforce`.
+
+The socket's allowed origins (`SOCKETCLUSTER_OPTIONS`) are still written to `docker-compose.override.yml`. Setting these only in `api/.env` has no effect.
 
 **Example:**
 ```bash

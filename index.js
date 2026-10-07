@@ -1144,14 +1144,18 @@ async function ensureApiEnvFile(directory) {
 
 /**
  * Write the realtime socket auth settings to the project-root .env file.
- * docker-compose.yml reads SOCKETCLUSTER_AUTH_KEY and SOCKETCLUSTER_AUTH_MODE from this
- * file (Compose loads it automatically) and hands the same key to the application, queue,
- * scheduler and socket containers; setting the key in api/.env has no effect.
+ * docker-compose.yml reads SOCKETCLUSTER_AUTH_KEY, SOCKETCLUSTER_AUTH_ENABLED and
+ * SOCKETCLUSTER_AUTH_MODE from this file (Compose loads it automatically) and hands the
+ * same key to the application, queue, scheduler and socket containers; setting them in
+ * api/.env has no effect.
+ * SOCKETCLUSTER_AUTH_ENABLED is the API-side switch (token routes, the authorize endpoint
+ * and signed HTTP publishing). With it off the API publishes over the legacy websocket
+ * path, which a socket server in enforce mode refuses, so fresh installs get `true`.
  * An existing key of at least 32 characters is kept across re-runs, because changing it
- * would invalidate every socket token already handed out. An existing mode is kept too.
- * Other lines in the file are left untouched.
+ * would invalidate every socket token already handed out. An existing switch value and
+ * mode are kept too. Other lines in the file are left untouched.
  * @param {string} directory  resolved installation directory
- * @returns {Promise<{ envPath: string, mode: string, generated: boolean }>}
+ * @returns {Promise<{ envPath: string, enabled: string, mode: string, generated: boolean }>}
  */
 async function ensureSocketAuthEnv(directory) {
     const crypto = require('crypto');
@@ -1191,17 +1195,29 @@ async function ensureSocketAuthEnv(directory) {
         generated = true;
         console.log('✔  Socket auth key generated');
     }
+    const enabled = readValue('SOCKETCLUSTER_AUTH_ENABLED') || 'true';
     const mode = readValue('SOCKETCLUSTER_AUTH_MODE') || 'enforce';
+    if (mode === 'enforce' && !/^(true|1|on|yes)$/i.test(enabled)) {
+        console.warn(
+            `   ⚠  SOCKETCLUSTER_AUTH_MODE=enforce needs SOCKETCLUSTER_AUTH_ENABLED=true (found "${enabled}").\n` +
+            '      The socket server will refuse API broadcasts; set the switch to true or the mode to log.'
+        );
+    }
 
-    const managed = /^\s*SOCKETCLUSTER_AUTH_(KEY|MODE)=/;
+    const managed = /^\s*SOCKETCLUSTER_AUTH_(KEY|ENABLED|MODE)=/;
     const output = lines.filter(line => !managed.test(line));
-    output.push(`SOCKETCLUSTER_AUTH_KEY=${authKey}`, `SOCKETCLUSTER_AUTH_MODE=${mode}`, '');
+    output.push(
+        `SOCKETCLUSTER_AUTH_KEY=${authKey}`,
+        `SOCKETCLUSTER_AUTH_ENABLED=${enabled}`,
+        `SOCKETCLUSTER_AUTH_MODE=${mode}`,
+        ''
+    );
 
     await fs.writeFile(envPath, output.join('\n'), { mode: 0o600 });
     try { await fs.chmod(envPath, 0o600); } catch { /* best effort, e.g. on Windows */ }
-    console.log(`✔  Socket auth written to .env (mode: ${mode})`);
+    console.log(`✔  Socket auth written to .env (enabled: ${enabled}, mode: ${mode})`);
 
-    return { envPath, mode, generated };
+    return { envPath, enabled, mode, generated };
 }
 
 // Command to install Fleetbase via Docker
@@ -1722,7 +1738,7 @@ ${buildEnvBlock(dbEnvVars)}
                         mailSetup.configure ? `Mail (${mailConfig.mailMailer})` : null,
                         storageChoice.driver !== 'public' ? `Storage (${storageChoice.driver.toUpperCase()})` : null,
                         'WebSocket security (origins restricted)',
-                        `Socket authentication (${socketAuth.mode}; key in .env)`,
+                        `Socket authentication (enabled: ${socketAuth.enabled}, mode: ${socketAuth.mode}; key in .env)`,
                         thirdPartySetup.configure ? 'Third-party APIs' : null,
                     ].filter(Boolean);
 
