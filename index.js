@@ -1142,6 +1142,92 @@ async function ensureApiEnvFile(directory) {
     console.log('✔  api/.env created');
 }
 
+/**
+ * Write the realtime socket auth settings to the project-root .env file.
+ * docker-compose.yml reads SOCKETCLUSTER_AUTH_KEY, SOCKETCLUSTER_AUTH_ENABLED and
+ * SOCKETCLUSTER_AUTH_MODE from this file (Compose loads it automatically) and hands the
+ * same key to the application, queue, scheduler and socket containers; setting them in
+ * api/.env has no effect.
+ * SOCKETCLUSTER_AUTH_ENABLED switches socket auth on for the API (token routes, the
+ * authorize endpoint, signed HTTP publishing) and the socket server. Fresh installs get
+ * `false` and mode `log`, the same as scripts/docker-install.sh: the key is provisioned,
+ * but clients that don't fetch socket tokens yet (released mobile apps, integrations)
+ * keep working until the switch is turned on. While it is off the API publishes over the
+ * legacy websocket path, so `enforce` needs the switch on.
+ * An existing key of at least 32 characters is kept across re-runs, because changing it
+ * would invalidate every socket token already handed out. An existing switch value and
+ * mode are kept too. Other lines in the file are left untouched.
+ * SOCKETCLUSTER_ORIGIN is the Origin header the API's websocket publisher sends (the path
+ * used while the switch is off). Without it the socket server sees the origin as `*` and,
+ * with restricted SOCKETCLUSTER_OPTIONS origins, refuses every broadcast with
+ * "Invalid origin: *". It defaults to `defaultOrigin` (an origin the written origins
+ * allow); an existing value is kept.
+ * @param {string} directory      resolved installation directory
+ * @param {string} defaultOrigin  console origin allowed by SOCKETCLUSTER_OPTIONS
+ * @returns {Promise<{ envPath: string, enabled: string, mode: string, origin: string, generated: boolean }>}
+ */
+async function ensureSocketAuthEnv(directory, defaultOrigin = '') {
+    const crypto = require('crypto');
+    const envPath = path.join(directory, '.env');
+
+    let lines = [];
+    if (await fs.pathExists(envPath)) {
+        const stat = await fs.stat(envPath);
+        if (stat.isDirectory()) {
+            console.error(`\n✖ ${envPath} is a directory; remove it and re-run the installer.`);
+            process.exit(1);
+        }
+        lines = (await fs.readFile(envPath, 'utf8')).split(/\r?\n/);
+        if (lines.length && lines[lines.length - 1] === '') lines.pop();
+    }
+
+    // Last KEY=value in the file wins (same as Compose), with surrounding quotes stripped.
+    const readValue = (key) => {
+        const pattern = new RegExp(`^\\s*${key}=(.*)$`);
+        let value = '';
+        for (const line of lines) {
+            const match = line.match(pattern);
+            if (match) value = match[1].trim().replace(/^(['"])(.*)\1$/, '$2');
+        }
+        return value;
+    };
+
+    let authKey = readValue('SOCKETCLUSTER_AUTH_KEY');
+    let generated = false;
+    if (authKey.length >= 32) {
+        console.log('✔  Keeping the existing socket auth key from .env');
+    } else {
+        if (authKey) {
+            console.warn('   ⚠  The socket auth key in .env is shorter than 32 characters; generating a new one.');
+        }
+        authKey = crypto.randomBytes(32).toString('hex'); // 64 hex characters
+        generated = true;
+        console.log('✔  Socket auth key generated');
+    }
+    const enabled = readValue('SOCKETCLUSTER_AUTH_ENABLED') || 'false';
+    const mode = readValue('SOCKETCLUSTER_AUTH_MODE') || 'log';
+    const origin = readValue('SOCKETCLUSTER_ORIGIN') || defaultOrigin;
+    const switchedOn = /^(true|1|yes|on)$/i.test(enabled);
+
+    const managed = /^\s*SOCKETCLUSTER_(AUTH_KEY|AUTH_ENABLED|AUTH_MODE|ORIGIN)=/;
+    const output = lines.filter(line => !managed.test(line));
+    output.push(
+        `SOCKETCLUSTER_AUTH_KEY=${authKey}`,
+        `SOCKETCLUSTER_AUTH_ENABLED=${enabled}`,
+        `SOCKETCLUSTER_AUTH_MODE=${mode}`,
+        ...(origin ? [`SOCKETCLUSTER_ORIGIN=${origin}`] : []),
+        ''
+    );
+
+    await fs.writeFile(envPath, output.join('\n'), { mode: 0o600 });
+    try { await fs.chmod(envPath, 0o600); } catch { /* best effort, e.g. on Windows */ }
+    const summary = switchedOn ? `on, mode: ${mode}` : 'off until SOCKETCLUSTER_AUTH_ENABLED=true';
+    console.log(`✔  Socket auth written to .env (${summary})`);
+    if (origin) console.log(`✔  API publisher origin: ${origin}`);
+
+    return { envPath, enabled, mode, origin, summary, generated };
+}
+
 // Command to install Fleetbase via Docker
 async function installFleetbaseCommand(options) {
     const crypto = require('crypto');
@@ -1423,6 +1509,9 @@ async function installFleetbaseCommand(options) {
             ? 'http://localhost:*,https://localhost:*,ws://localhost:*,wss://localhost:*'
             : `${schemeConsole}://${host}:*,wss://${host}:*`;
         const socketClusterOptions = JSON.stringify({ origins: socketOrigins });
+        // Origin the API publisher sends; the socket server matches hostname + port
+        // against the entries above (e.g. "localhost:*"), so it must fall inside them.
+        const socketPublisherOrigin = isLocalhost ? 'http://localhost:4200' : `${schemeConsole}://${host}`;
         console.log(`✔  SESSION_DOMAIN set to: ${sessionDomain}`);
         console.log(`✔  WebSocket origins restricted to: ${socketOrigins}`);
 
@@ -1463,6 +1552,10 @@ async function installFleetbaseCommand(options) {
         console.log('\n⏳ Generating APP_KEY...');
         const appKey = 'base64:' + crypto.randomBytes(32).toString('base64');
         console.log('✔  APP_KEY generated');
+
+        // ── Step 8b: Socket authentication key (project-root .env) ───────────
+        console.log('\n⏳ Configuring socket authentication...');
+        const socketAuth = await ensureSocketAuthEnv(directory, socketPublisherOrigin);
 
         // ── Step 9: Write docker-compose.override.yml ─────────────────────────
         console.log('⏳ Writing docker-compose.override.yml...');
@@ -1656,6 +1749,7 @@ ${buildEnvBlock(dbEnvVars)}
                         mailSetup.configure ? `Mail (${mailConfig.mailMailer})` : null,
                         storageChoice.driver !== 'public' ? `Storage (${storageChoice.driver.toUpperCase()})` : null,
                         'WebSocket security (origins restricted)',
+                        `Socket authentication (${socketAuth.summary}; key in .env)`,
                         thirdPartySetup.configure ? 'Third-party APIs' : null,
                     ].filter(Boolean);
 

@@ -164,6 +164,17 @@ flb install-fleetbase
 
 The installer creates an empty `api/.env` (bind-mounted by `docker-compose.yml`) when one does not exist.
 
+It also writes the realtime socket authentication settings to the project-root `.env` (next to `docker-compose.yml`), which Compose passes to the application, queue, scheduler and socket containers:
+
+- `SOCKETCLUSTER_AUTH_KEY`: shared secret between the API and the socket server (64 random hex characters). An existing key of 32+ characters is kept on re-runs, since changing it invalidates socket tokens already issued.
+- `SOCKETCLUSTER_AUTH_ENABLED`: switches socket authentication on for the API and the socket server (default `false`; an existing value is kept). The API's socket token routes, its authorize endpoint and signed HTTP publishing are active only when this is `true` and the key is valid. While it is off, nothing is authenticated, the token routes answer `404`, and the API publishes over the legacy websocket path, so clients that don't fetch socket tokens yet keep working.
+- `SOCKETCLUSTER_ORIGIN`: the `Origin` header the API sends when it publishes over the websocket, which it does while socket auth is off. Defaults to the console origin (`http://localhost:4200` for localhost installs, `<scheme>://<host>` otherwise), which the origins written to `SOCKETCLUSTER_OPTIONS` allow; an existing value is kept. Without it the socket server refuses every broadcast with `Invalid origin: *`.
+- `SOCKETCLUSTER_AUTH_MODE`: `off`, `log` or `enforce` (default `log`; an existing value is kept). It only takes effect once the switch is on. `enforce` requires `SOCKETCLUSTER_AUTH_ENABLED=true` on the API, since an enforcing socket server refuses the legacy publish path.
+
+These are the same defaults as `scripts/docker-install.sh`. To turn socket authentication on, follow this order: ship clients that fall back to an anonymous connection when the token route answers `404`, then set `SOCKETCLUSTER_AUTH_ENABLED=true` with `SOCKETCLUSTER_AUTH_MODE=log`, and switch to `enforce` once the socket server's deny log only shows traffic you expect to lose. Restart the containers after editing `.env`.
+
+The socket's allowed origins (`SOCKETCLUSTER_OPTIONS`) are still written to `docker-compose.override.yml`. Setting these only in `api/.env` has no effect.
+
 **Example:**
 ```bash
 flb install-fleetbase --host 0.0.0.0 --environment production --directory /opt/fleetbase
