@@ -1157,10 +1157,16 @@ async function ensureApiEnvFile(directory) {
  * An existing key of at least 32 characters is kept across re-runs, because changing it
  * would invalidate every socket token already handed out. An existing switch value and
  * mode are kept too. Other lines in the file are left untouched.
- * @param {string} directory  resolved installation directory
- * @returns {Promise<{ envPath: string, enabled: string, mode: string, generated: boolean }>}
+ * SOCKETCLUSTER_ORIGIN is the Origin header the API's websocket publisher sends (the path
+ * used while the switch is off). Without it the socket server sees the origin as `*` and,
+ * with restricted SOCKETCLUSTER_OPTIONS origins, refuses every broadcast with
+ * "Invalid origin: *". It defaults to `defaultOrigin` (an origin the written origins
+ * allow); an existing value is kept.
+ * @param {string} directory      resolved installation directory
+ * @param {string} defaultOrigin  console origin allowed by SOCKETCLUSTER_OPTIONS
+ * @returns {Promise<{ envPath: string, enabled: string, mode: string, origin: string, generated: boolean }>}
  */
-async function ensureSocketAuthEnv(directory) {
+async function ensureSocketAuthEnv(directory, defaultOrigin = '') {
     const crypto = require('crypto');
     const envPath = path.join(directory, '.env');
 
@@ -1200,14 +1206,16 @@ async function ensureSocketAuthEnv(directory) {
     }
     const enabled = readValue('SOCKETCLUSTER_AUTH_ENABLED') || 'false';
     const mode = readValue('SOCKETCLUSTER_AUTH_MODE') || 'log';
+    const origin = readValue('SOCKETCLUSTER_ORIGIN') || defaultOrigin;
     const switchedOn = /^(true|1|yes|on)$/i.test(enabled);
 
-    const managed = /^\s*SOCKETCLUSTER_AUTH_(KEY|ENABLED|MODE)=/;
+    const managed = /^\s*SOCKETCLUSTER_(AUTH_KEY|AUTH_ENABLED|AUTH_MODE|ORIGIN)=/;
     const output = lines.filter(line => !managed.test(line));
     output.push(
         `SOCKETCLUSTER_AUTH_KEY=${authKey}`,
         `SOCKETCLUSTER_AUTH_ENABLED=${enabled}`,
         `SOCKETCLUSTER_AUTH_MODE=${mode}`,
+        ...(origin ? [`SOCKETCLUSTER_ORIGIN=${origin}`] : []),
         ''
     );
 
@@ -1215,8 +1223,9 @@ async function ensureSocketAuthEnv(directory) {
     try { await fs.chmod(envPath, 0o600); } catch { /* best effort, e.g. on Windows */ }
     const summary = switchedOn ? `on, mode: ${mode}` : 'off until SOCKETCLUSTER_AUTH_ENABLED=true';
     console.log(`✔  Socket auth written to .env (${summary})`);
+    if (origin) console.log(`✔  API publisher origin: ${origin}`);
 
-    return { envPath, enabled, mode, summary, generated };
+    return { envPath, enabled, mode, origin, summary, generated };
 }
 
 // Command to install Fleetbase via Docker
@@ -1500,6 +1509,9 @@ async function installFleetbaseCommand(options) {
             ? 'http://localhost:*,https://localhost:*,ws://localhost:*,wss://localhost:*'
             : `${schemeConsole}://${host}:*,wss://${host}:*`;
         const socketClusterOptions = JSON.stringify({ origins: socketOrigins });
+        // Origin the API publisher sends; the socket server matches hostname + port
+        // against the entries above (e.g. "localhost:*"), so it must fall inside them.
+        const socketPublisherOrigin = isLocalhost ? 'http://localhost:4200' : `${schemeConsole}://${host}`;
         console.log(`✔  SESSION_DOMAIN set to: ${sessionDomain}`);
         console.log(`✔  WebSocket origins restricted to: ${socketOrigins}`);
 
@@ -1543,7 +1555,7 @@ async function installFleetbaseCommand(options) {
 
         // ── Step 8b: Socket authentication key (project-root .env) ───────────
         console.log('\n⏳ Configuring socket authentication...');
-        const socketAuth = await ensureSocketAuthEnv(directory);
+        const socketAuth = await ensureSocketAuthEnv(directory, socketPublisherOrigin);
 
         // ── Step 9: Write docker-compose.override.yml ─────────────────────────
         console.log('⏳ Writing docker-compose.override.yml...');
