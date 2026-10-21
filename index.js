@@ -11,13 +11,176 @@ const semver = require('semver');
 const glob = require('glob-promise');
 const FormData = require('form-data');
 const _ = require('lodash');
+const os = require('os');
 const packageJson = require('./package.json');
 const maxBuffer = 1024 * 1024 * 50; // 50MB
 const defaultRegistry = 'https://registry.fleetbase.io';
-const packageLookupApi = 'https://api.fleetbase.io/~registry/v1/lookup';
-const bundleUploadApi = 'https://api.fleetbase.io/~registry/v1/bundle-upload';
-const extensionsListApi = 'https://api.fleetbase.io/~registry/v1/extensions';
+const defaultHost = 'https://api.fleetbase.io';
 const starterExtensionRepo = 'https://github.com/fleetbase/starter-extension.git';
+// CLI config lives in ~/.fleetbase/config.json (override the directory with FLEETBASE_HOME, e.g. for tests)
+const configDir = process.env.FLEETBASE_HOME || path.join(os.homedir(), '.fleetbase');
+const configFilePath = path.join(configDir, 'config.json');
+const configDisplayPath = process.env.FLEETBASE_HOME ? configFilePath : '~/.fleetbase/config.json';
+
+// ─── Host and config helpers ──────────────────────────────────────────────────
+
+/**
+ * Normalise a host into a URL with a scheme.
+ *  - an existing scheme is kept as-is
+ *  - localhost / 127.0.0.1 / hosts with an explicit port get http://
+ *  - everything else gets https://
+ * Trailing slashes are stripped.
+ * @param {string} host
+ * @returns {string}
+ */
+function normalizeHost (host) {
+    if (typeof host !== 'string') {
+        return host;
+    }
+
+    const value = host.trim().replace(/\/+$/, '');
+    if (!value) {
+        return value;
+    }
+
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+        return value;
+    }
+
+    const authority = value.split('/')[0];
+    // "[::1]:8000" -> hostname "::1"; "localhost:8000" -> "localhost"
+    const bracketed = authority.match(/^\[([^\]]+)\](?::(\d+))?$/);
+    const hostname = (bracketed ? bracketed[1] : authority.replace(/:\d+$/, '')).toLowerCase();
+    const hasPort = bracketed ? Boolean(bracketed[2]) : /:\d+$/.test(authority);
+    const isLocal = ['localhost', '127.0.0.1', '0.0.0.0', '::1'].includes(hostname) || hostname.endsWith('.localhost');
+    const scheme = isLocal || hasPort ? 'http' : 'https';
+
+    return `${scheme}://${value}`;
+}
+
+/**
+ * The host[:port] part of a URL, used as the key for stored tokens.
+ * @param {string} host
+ * @returns {string}
+ */
+function hostKey (host) {
+    return new URL(normalizeHost(host)).host;
+}
+
+function isDefaultHost (host) {
+    return normalizeHost(host) === defaultHost;
+}
+
+/** Suffix for printed follow-up commands: empty for the default host. */
+function hostFlag (host) {
+    return isDefaultHost(host) ? '' : ` --host ${host}`;
+}
+
+function maskToken (token) {
+    const value = String(token ?? '');
+    if (value.length <= 8) {
+        return '********';
+    }
+    return `${value.slice(0, 4)}${'*'.repeat(Math.min(value.length - 8, 12))}${value.slice(-4)}`;
+}
+
+/**
+ * Read ~/.fleetbase/config.json. Always resolves to an object.
+ * Shape: { host, registry, tokens: { "<host>": "<token>" }, defaultOrganization }
+ */
+async function readConfig () {
+    try {
+        if (await fs.pathExists(configFilePath)) {
+            const config = await fs.readJson(configFilePath);
+            if (config && typeof config === 'object' && !Array.isArray(config)) {
+                return config;
+            }
+        }
+    } catch (error) {
+        console.warn(`Warning: could not read ${configFilePath}: ${error.message}`);
+    }
+
+    return {};
+}
+
+async function writeConfig (config) {
+    await fs.ensureDir(configDir);
+    await fs.writeJson(configFilePath, config, { spaces: 4, mode: 0o600 });
+    try {
+        await fs.chmod(configFilePath, 0o600);
+    } catch (error) {
+        // best effort: the file holds tokens, but not every filesystem supports chmod
+    }
+
+    return configFilePath;
+}
+
+async function updateConfig (updater) {
+    const config = await readConfig();
+    const next = (await updater(config)) || config;
+    await writeConfig(next);
+    return next;
+}
+
+/** Store a token for a host (keyed by host[:port]). */
+async function saveToken (host, token) {
+    return updateConfig(config => {
+        config.tokens = { ...(config.tokens || {}), [hostKey(host)]: token };
+    });
+}
+
+/** First stored token found for any of the given hosts, or null. */
+async function getStoredToken (...hosts) {
+    const config = await readConfig();
+    const tokens = config.tokens || {};
+
+    for (const host of hosts) {
+        if (!host) {
+            continue;
+        }
+        const token = tokens[hostKey(host)];
+        if (token) {
+            return token;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Resolve the API host: first truthy candidate (flags) > config file > default.
+ * @param  {...string} candidates
+ * @returns {Promise<string>}
+ */
+async function resolveHost (...candidates) {
+    for (const candidate of candidates) {
+        if (candidate) {
+            return normalizeHost(candidate);
+        }
+    }
+
+    const config = await readConfig();
+    if (config.host) {
+        return normalizeHost(config.host);
+    }
+
+    return defaultHost;
+}
+
+/** Build a registry API URL on the given host. */
+function registryApi (host, endpoint) {
+    return `${normalizeHost(host)}/~registry/v1/${endpoint.replace(/^\/+/, '')}`;
+}
+
+/** Host flag for the current invocation: command option, then the global --host. */
+function hostOption (options = {}) {
+    return options.host || program.opts().host;
+}
+
+/** Registry for the current invocation: command option, then the global --registry, then the default. */
+function registryOption (options = {}) {
+    return options.registry || program.opts().registry || defaultRegistry;
+}
 
 function publishPackage (packagePath, registry, options = {}) {
     if (typeof options.onBefore === 'function') {
@@ -130,16 +293,31 @@ function onAfterPublishComposer (packagePath) {
     fs.removeSync(path.join(packagePath, 'package.json'));
 }
 
-async function setAuth (token, fleetbasePath = '.', fleetbaseRegistry = defaultRegistry) {
+async function setAuth (token, fleetbasePath = '.', fleetbaseRegistry = defaultRegistry, apiHost = null) {
     try {
         if (!token) {
-            console.error('Auth token is required.');
+            // Fall back to a token previously stored by `flb verify` / `flb generate-token` / `flb set-auth`
+            token = await getStoredToken(fleetbaseRegistry, apiHost);
+        }
+
+        if (!token) {
+            console.error(`Auth token is required (none stored for ${fleetbaseRegistry} in ${configFilePath}).`);
             process.exit(1);
         }
 
+        // Store the token in ~/.fleetbase/config.json, keyed by host
+        await updateConfig(config => {
+            config.tokens = { ...(config.tokens || {}), [hostKey(fleetbaseRegistry)]: token };
+            if (apiHost) {
+                config.host = normalizeHost(apiHost);
+                config.tokens[hostKey(apiHost)] = token;
+            }
+        });
+        console.log(`Registry token saved to ${configFilePath} for ${hostKey(fleetbaseRegistry)}`);
+
         // Expand ~ to the home directory if present
         if (fleetbasePath.startsWith('~')) {
-            fleetbasePath = path.join(require('os').homedir(), fleetbasePath.slice(1));
+            fleetbasePath = path.join(os.homedir(), fleetbasePath.slice(1));
         }
 
         // Determine Fleetbase path
@@ -158,25 +336,18 @@ async function setAuth (token, fleetbasePath = '.', fleetbaseRegistry = defaultR
             currentPath = defaultFleetbasePath;
         }
 
-        const npmrcPath = path.join(currentPath, 'console', '.npmrc');
         const composerAuthPath = path.join(currentPath, 'api', 'auth.json');
 
-        // Set the npmrc token
-        const authString = `//${new URL(fleetbaseRegistry).host}/:_authToken="${token}"\n`;
-
-        // Append to .npmrc if it exists, otherwise create and write
-        if (await fs.pathExists(npmrcPath)) {
-            await fs.appendFile(npmrcPath, authString);
-            console.log(`NPM auth token set in ${npmrcPath}`);
-        } else {
-            await fs.writeFile(npmrcPath, authString);
-            console.log(`NPM auth token set in ${npmrcPath}`);
+        // Without a Fleetbase instance there is nothing more to write; the token is already stored in the config file
+        if (!(await fs.pathExists(path.join(currentPath, 'api')))) {
+            console.warn(`No Fleetbase instance found at ${path.resolve(fleetbasePath || '.')} or ${defaultFleetbasePath}; skipped writing api/auth.json.`);
+            return;
         }
 
         // Set the composer auth token
         const newBearerConfig = {
             bearer: {
-                [new URL(fleetbaseRegistry).host]: token,
+                [hostKey(fleetbaseRegistry)]: token,
             },
         };
 
@@ -202,11 +373,17 @@ async function setAuth (token, fleetbasePath = '.', fleetbaseRegistry = defaultR
     }
 }
 
-async function uninstallPackage (packageName, fleetbasePath = '.') {
+async function uninstallPackage (packageName, fleetbasePath = '.', host = null) {
     try {
+        if (!packageName) {
+            throw new Error('Package name is required');
+        }
+
+        const apiHost = await resolveHost(host);
+
         // Expand ~ to the home directory if present
         if (fleetbasePath.startsWith('~')) {
-            fleetbasePath = path.join(require('os').homedir(), fleetbasePath.slice(1));
+            fleetbasePath = path.join(os.homedir(), fleetbasePath.slice(1));
         }
 
         // Resolve the Fleetbase instance path
@@ -224,7 +401,7 @@ async function uninstallPackage (packageName, fleetbasePath = '.') {
         }
 
         // Make the GET request to the lookup API
-        const response = await axios.get(packageLookupApi, {
+        const response = await axios.get(registryApi(apiHost, 'lookup'), {
             params: { package: packageName },
         });
 
@@ -242,15 +419,22 @@ async function uninstallPackage (packageName, fleetbasePath = '.') {
 
         console.log('Package uninstall successful!');
     } catch (error) {
-        console.error(`Unnstall failed: ${error.message}`);
+        console.error(`Uninstall failed: ${error.response?.data?.error ?? error.response?.data?.message ?? error.message}`);
+        process.exit(1);
     }
 }
 
-async function installPackage (packageName, fleetbasePath = '.') {
+async function installPackage (packageName, fleetbasePath = '.', host = null) {
     try {
+        if (!packageName) {
+            throw new Error('Package name is required');
+        }
+
+        const apiHost = await resolveHost(host);
+
         // Expand ~ to the home directory if present
         if (fleetbasePath.startsWith('~')) {
-            fleetbasePath = path.join(require('os').homedir(), fleetbasePath.slice(1));
+            fleetbasePath = path.join(os.homedir(), fleetbasePath.slice(1));
         }
 
         // Resolve the Fleetbase instance path
@@ -268,7 +452,7 @@ async function installPackage (packageName, fleetbasePath = '.') {
         }
 
         // Make the GET request to the lookup API
-        const response = await axios.get(packageLookupApi, {
+        const response = await axios.get(registryApi(apiHost, 'lookup'), {
             params: { package: packageName },
         });
 
@@ -286,7 +470,8 @@ async function installPackage (packageName, fleetbasePath = '.') {
 
         console.log('Package installation successful!');
     } catch (error) {
-        console.error(`Installation failed: ${error.message}`);
+        console.error(`Installation failed: ${error.response?.data?.error ?? error.response?.data?.message ?? error.message}`);
+        process.exit(1);
     }
 }
 
@@ -303,8 +488,8 @@ async function scaffoldExtension (options) {
             { type: 'input', name: 'repo', message: 'Repository URL:', initial: options.repo },
         ]);
 
-        const targetDirName = _.kebabCase(answers.name);
-        const targetPath = path.resolve(options.path || '.', targetDirName);
+        let targetDirName = _.kebabCase(answers.name);
+        let targetPath = path.resolve(options.path || '.', targetDirName);
 
         // Check if the target directory exists, and if so, append "-1", "-2", etc. until a unique directory is found
         let counter = 1;
@@ -342,18 +527,21 @@ async function scaffoldExtension (options) {
         const configPath = path.join(targetPath, `server/config/starter.php`);
         const routesPath = path.join(targetPath, `server/src/routes.php`);
 
+        // Only set a repository when one was given; otherwise drop the starter repo's value
+        const repository = answers.repo && answers.repo.trim() ? answers.repo.trim() : undefined;
+
         // Load and update files
         await updateJsonFile(extensionJsonPath, {
             name: answers.name,
             description: answers.description,
-            repository: answers.repo,
+            repository,
             author: `${answers.author} <${answers.email}>`,
         });
 
         await updateJsonFile(packageJsonPath, {
             name: packageJsonName,
             description: answers.description,
-            repository: answers.repo,
+            repository,
             author: `${answers.author} <${answers.email}>`,
             keywords: keywordsArray,
             fleetbase: {
@@ -399,6 +587,7 @@ async function scaffoldExtension (options) {
         console.log('Extension scaffolded successfully!');
     } catch (error) {
         console.error(`Error scaffolding extension: ${error.message}`);
+        process.exit(1);
     }
 }
 
@@ -583,7 +772,7 @@ async function bundleExtension (options) {
 
         if (upload) {
             // Call upload function with the bundle path
-            await uploadBundle(bundlePath, options);
+            await uploadBundle(bundlePath, { ...options, registry: registryOption(options), host: hostOption(options) });
         }
     } catch (error) {
         console.error(`Error bundling extension: ${error.message}`);
@@ -594,16 +783,22 @@ async function bundleExtension (options) {
 // Function to upload the bundle
 async function uploadBundle (bundlePath, options) {
     const registry = options.registry || defaultRegistry;
-    const uploadUrl = bundleUploadApi;
+    const apiHost = await resolveHost(options.host);
+    const uploadUrl = registryApi(apiHost, 'bundle-upload');
 
     let authToken = options.authToken;
     if (!authToken) {
-        // Try to get auth token from ~/.npmrc
-        authToken = await getAuthToken(registry);
+        // Try to get the auth token from ~/.fleetbase/config.json (keyed by API host, then registry host)
+        authToken = await getStoredToken(apiHost, registry);
         if (!authToken) {
-            console.error(`Auth token not found for registry ${registry}. Please provide an auth token using the --auth-token option.`);
+            console.error(`Auth token not found for ${hostKey(apiHost)} or ${hostKey(registry)} in ${configFilePath}. Run \`flb set-auth <token>\` or pass --auth-token.`);
             process.exit(1);
         }
+    }
+
+    if (!(await fs.pathExists(bundlePath))) {
+        console.error(`Bundle file not found: ${bundlePath}`);
+        process.exit(1);
     }
 
     try {
@@ -619,35 +814,16 @@ async function uploadBundle (bundlePath, options) {
             maxBodyLength: Infinity,
         });
 
-        console.log(`Bundle uploaded successfully: ${response.data.message}`);
+        console.log(`Bundle uploaded successfully: ${response.data?.message ?? 'OK'}`);
     } catch (error) {
-        console.log(error.response.data);
-        console.error(`Error uploading bundle: ${error.response.data?.error ?? error.message}`);
+        const data = error.response?.data;
+        const message = (data && typeof data === 'object' && (data.error || data.message)) || (typeof data === 'string' && data) || error.message;
+        if (error.response) {
+            console.error(`Upload failed with HTTP ${error.response.status} from ${uploadUrl}`);
+        }
+        console.error(`Error uploading bundle: ${message}`);
         process.exit(1);
     }
-}
-
-// Function to get the auth token from .npmrc
-async function getAuthToken (registryUrl) {
-    const npmrcPath = path.join(require('os').homedir(), '.npmrc');
-    if (!(await fs.pathExists(npmrcPath))) {
-        return null;
-    }
-
-    const npmrcContent = await fs.readFile(npmrcPath, 'utf-8');
-    const lines = npmrcContent.split('\n');
-
-    const registryHost = new URL(registryUrl).host;
-
-    // Look for line matching //registry.fleetbase.io/:_authToken=...
-    for (const line of lines) {
-        const match = line.match(new RegExp(`^//${registryHost}/:_authToken=(.*)$`));
-        if (match) {
-            return match[1].replace(/^"|"$/g, ''); // Remove quotes if present
-        }
-    }
-
-    return null;
 }
 
 // Function to find the latest bundle
@@ -681,8 +857,9 @@ async function findLatestBundle (directory) {
 // Command to handle the upload
 async function uploadCommand (bundleFile, options) {
     const directory = options.path || '.';
-    const registry = options.registry || defaultRegistry;
+    const registry = registryOption(options);
     const authToken = options.authToken;
+    const host = hostOption(options);
 
     if (!bundleFile) {
         bundleFile = await findLatestBundle(directory);
@@ -692,9 +869,9 @@ async function uploadCommand (bundleFile, options) {
         }
     }
 
-    const bundlePath = path.join(directory, bundleFile);
+    const bundlePath = path.isAbsolute(bundleFile) ? bundleFile : path.join(directory, bundleFile);
 
-    await uploadBundle(bundlePath, { registry, authToken });
+    await uploadBundle(bundlePath, { registry, authToken, host });
 }
 
 // Function to bump the version
@@ -724,11 +901,9 @@ async function versionBump (options) {
 
 // Command to handle registration
 async function registerCommand(options) {
-    const host = options.host || 'https://api.fleetbase.io';
-    // Ensure host has protocol, add https:// if missing
-    const apiHost = host.startsWith('http://') || host.startsWith('https://') ? host : `https://${host}`;
-    const registrationApi = `${apiHost}/~registry/v1/developer-account/register`;
-    
+    const apiHost = await resolveHost(hostOption(options));
+    const registrationApi = registryApi(apiHost, 'developer-account/register');
+
     try {
         // Collect registration information
         const answers = await prompt([
@@ -797,9 +972,9 @@ async function registerCommand(options) {
             console.log('\n✓ Account created successfully!');
             console.log('✓ A verification code has been sent to your email.');
             console.log('\n👉 Next step: Verify your email address');
-            const verifyCmd = `flb verify -e ${registrationData.email}` + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : '');
+            const verifyCmd = `flb verify -e ${registrationData.email}${hostFlag(apiHost)}`;
             console.log(`   Run: ${verifyCmd}`);
-            const loginCmd = `flb login -u ${registrationData.username}` + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : '');
+            const loginCmd = `flb login -u ${registrationData.username}${hostFlag(apiHost)}`;
             console.log(`\n✓ After verification, login with: ${loginCmd}`);
         } else {
             console.error('Registration failed:', response.data.message || 'Unknown error');
@@ -831,6 +1006,34 @@ async function registerCommand(options) {
     }
 }
 
+/**
+ * Store a freshly issued registry token in the config file and tell the user where it went.
+ * The token itself is only printed when --show-token was passed.
+ */
+async function printAndStoreToken (token, apiHost, showToken = false) {
+    let saved = false;
+    try {
+        await saveToken(apiHost, token);
+        saved = true;
+    } catch (error) {
+        console.warn(`\n⚠️  Could not save the token to ${configFilePath}: ${error.message}`);
+    }
+
+    console.log('\n🔑 Your Registry Token:');
+    if (showToken) {
+        console.log(`   ${token}`);
+    } else {
+        console.log(`   ${maskToken(token)}  (hidden; pass --show-token to print it)`);
+    }
+
+    if (saved) {
+        console.log(`\n✓ Token saved to ${configFilePath} for ${hostKey(apiHost)}`);
+    }
+    console.log('\n💡 Keep this token secret! You\'ll need it to authenticate with the registry.');
+    const registryHint = isDefaultHost(apiHost) ? '' : ` --registry ${apiHost}`;
+    console.log(`   To configure a Fleetbase instance, run: flb set-auth${saved ? '' : ' <token>'}${registryHint} --path <instance-path>`);
+}
+
 // Command to verify developer account email
 async function verifyCommand(options) {
     console.log('\n📧 Verify Your Registry Developer Account\n');
@@ -838,7 +1041,7 @@ async function verifyCommand(options) {
     try {
         let email = options.email;
         let code = options.code;
-        const host = options.host || 'https://api.fleetbase.io';
+        const apiHost = await resolveHost(hostOption(options));
 
         // Only prompt if values not provided
         if (!email || !code) {
@@ -864,11 +1067,7 @@ async function verifyCommand(options) {
             code = code || answers.code;
         }
 
-        // Ensure host has protocol
-        const apiHost = host.startsWith('http://') || host.startsWith('https://') 
-            ? host 
-            : `https://${host}`;
-        const verificationApi = `${apiHost}/~registry/v1/developer-account/verify`;
+        const verificationApi = registryApi(apiHost, 'developer-account/verify');
 
         console.log('\nVerifying account...');
 
@@ -881,15 +1080,12 @@ async function verifyCommand(options) {
         if (response.data.status === 'success') {
             console.log('\n✓ Email verified successfully!');
             
-            // Display registry token if provided
+            // Store the registry token if provided; only print it when asked to
             if (response.data.token) {
-                console.log('\n🔑 Your Registry Token:');
-                console.log(`   ${response.data.token}`);
-                console.log('\n💡 Save this token securely! You\'ll need it to authenticate with the registry.');
-                console.log('   Use: flb set-auth ' + response.data.token + (host !== 'https://api.fleetbase.io' ? ` --registry ${host}` : ''));
+                await printAndStoreToken(response.data.token, apiHost, options.showToken);
             }
-            
-            console.log('\n✓ You can now login with: flb login -u <username>' + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : ''));
+
+            console.log(`\n✓ You can now login with: flb login -u <username>${hostFlag(apiHost)}`);
         } else {
             console.error('\nVerification failed:', response.data.message || 'Unknown error');
             process.exit(1);
@@ -925,7 +1121,7 @@ async function generateTokenCommand(options) {
     try {
         let email = options.email;
         let password = options.password;
-        const host = options.host || 'https://api.fleetbase.io';
+        const apiHost = await resolveHost(hostOption(options));
 
         // Prompt for credentials if not provided
         if (!email || !password) {
@@ -950,11 +1146,7 @@ async function generateTokenCommand(options) {
             password = password || answers.password;
         }
 
-        // Ensure host has protocol
-        const apiHost = host.startsWith('http://') || host.startsWith('https://') 
-            ? host 
-            : `https://${host}`;
-        const generateTokenApi = `${apiHost}/~registry/v1/developer-account/generate-token`;
+        const generateTokenApi = registryApi(apiHost, 'developer-account/generate-token');
 
         console.log('\nGenerating token...');
 
@@ -966,10 +1158,7 @@ async function generateTokenCommand(options) {
 
         if (response.data.status === 'success') {
             console.log('\n✓ ' + response.data.message);
-            console.log('\n🔑 Your Registry Token:');
-            console.log(`   ${response.data.token}`);
-            console.log('\n💡 Save this token securely! You\'ll need it to authenticate with the registry.');
-            console.log('   Use: flb set-auth ' + response.data.token + (host !== 'https://api.fleetbase.io' ? ` --registry ${host}` : ''));
+            await printAndStoreToken(response.data.token, apiHost, options.showToken);
             console.log('\n⚠️  Note: This replaces any previously generated token.');
         } else {
             console.error('\nToken generation failed:', response.data.message || 'Unknown error');
@@ -1005,7 +1194,7 @@ async function resendVerificationCommand(options) {
 
     try {
         let email = options.email;
-        const host = options.host || 'https://api.fleetbase.io';
+        const apiHost = await resolveHost(hostOption(options));
 
         // Prompt for email if not provided
         if (!email) {
@@ -1020,11 +1209,7 @@ async function resendVerificationCommand(options) {
             email = answers.email;
         }
 
-        // Ensure host has protocol
-        const apiHost = host.startsWith('http://') || host.startsWith('https://') 
-            ? host 
-            : `https://${host}`;
-        const resendApi = `${apiHost}/~registry/v1/developer-account/resend-verification`;
+        const resendApi = registryApi(apiHost, 'developer-account/resend-verification');
 
         console.log('\nResending verification code...');
 
@@ -1037,7 +1222,7 @@ async function resendVerificationCommand(options) {
             console.log('\n✓ Verification code sent!');
             console.log('✓ Check your email for the new verification code.');
             console.log('\n👉 Once you receive it, run:');
-            console.log(`   flb verify -e ${email}` + (host !== 'https://api.fleetbase.io' ? ` --host ${host}` : ''));
+            console.log(`   flb verify -e ${email}${hostFlag(apiHost)}`);
         } else {
             console.error('\nFailed to resend:', response.data.message || 'Unknown error');
             process.exit(1);
@@ -1701,12 +1886,47 @@ ${buildEnvBlock(dbEnvVars)}
 
 
 
-function loginCommand (options) {
-    const npmLogin = require('npm-cli-login');
+/**
+ * Promise wrapper around npm-cli-login. The package's default export is callback based and
+ * throws from inside async callbacks, so failures could never be caught by the caller.
+ * @returns {Promise<string>} path of the npmrc file that was written
+ */
+function npmLogin (username, password, email, registry, scope, quotes, configPath) {
+    const ncl = require('npm-cli-login/lib/login.js');
+    const args = ncl.processArguments(username, password, email, registry, scope || undefined, quotes, configPath || undefined);
+    const toError = err => (err instanceof Error ? err : new Error(String(err)));
+
+    return new Promise((resolve, reject) => {
+        ncl.login(args, (loginError, response) => {
+            if (loginError) {
+                return reject(toError(loginError));
+            }
+
+            ncl.readFile(args, (readError, contents) => {
+                if (readError) {
+                    return reject(toError(readError));
+                }
+
+                let lines;
+                try {
+                    lines = ncl.generateFileContents(args, contents, response);
+                } catch (error) {
+                    return reject(toError(error));
+                }
+
+                ncl.writeFile(args, lines, writeError => (writeError ? reject(toError(writeError)) : resolve(args.configPath)));
+            });
+        });
+    });
+}
+
+async function loginCommand (options) {
     const username = options.username;
     const password = options.password;
     const email = options.email;
-    const registry = options.registry || defaultRegistry;
+    // An explicit --host (self-hosted instance) doubles as the registry unless --registry is given
+    const host = hostOption(options);
+    const registry = normalizeHost(options.registry || program.opts().registry || host || defaultRegistry);
     const scope = options.scope || '';
     const quotes = options.quotes || '';
     const configPath = options.configPath || '';
@@ -1717,8 +1937,8 @@ function loginCommand (options) {
     }
 
     try {
-        npmLogin(username, password, email, registry, scope, quotes, configPath);
-        console.log(`Logged in to registry ${registry}`);
+        const npmrcPath = await npmLogin(username, password, email, registry, scope, quotes, configPath);
+        console.log(`Logged in to registry ${registry} (credentials written to ${npmrcPath})`);
     } catch (error) {
         console.error(`Error during login: ${error.message}`);
         process.exit(1);
@@ -1779,11 +1999,8 @@ function displayExtensionsTable(extensions) {
 
 // Command: search and list available extensions
 async function searchExtensionsCommand(query, options) {
-    const host = options.host || 'https://api.fleetbase.io';
-    const apiHost = host.startsWith('http://') || host.startsWith('https://')
-        ? host
-        : `https://${host}`;
-    const endpoint = `${apiHost}/~registry/v1/extensions`;
+    const apiHost = await resolveHost(hostOption(options));
+    const endpoint = registryApi(apiHost, 'extensions');
 
     if (!options.json && !options.simple) {
         console.log('\n\u{1F50D} Searching Fleetbase Extensions...\n');
@@ -1862,19 +2079,25 @@ async function searchExtensionsCommand(query, options) {
 }
 
 program.name('flb').description('CLI tool for managing Fleetbase Extensions').version(`${packageJson.name} ${packageJson.version}`, '-v, --version', 'Output the current version');
-program.option('-r, --registry [url]', 'Specify a fleetbase extension repository', defaultRegistry);
+// Global options must come before the sub-command (e.g. `flb --host localhost:8000 install ...`) so that
+// sub-commands can define their own --host / --registry (e.g. install-fleetbase's bind host).
+program.enablePositionalOptions();
+program.option('-r, --registry [url]', `Specify a fleetbase extension repository (default: ${defaultRegistry})`);
+program.option('--host <url>', `Fleetbase API host (default: host in ${configDisplayPath}, then ${defaultHost})`);
 
 program
     .command('set-auth [token]')
     .option('-p, --path <path>', 'Path of the Fleetbase instance to install setup for')
-    .option('-r, --registry <url>', 'Registry URL the credentials are for', defaultRegistry)
-    .description('Set registry auth token')
-    .action(async (token, { path, registry }) => {
-        const fleetbasePath = path || '.';
-        const fleetbaseRegistry = program.opts().registry ?? registry;
+    .option('-r, --registry <url>', `Registry URL the credentials are for (default: ${defaultRegistry})`)
+    .option('--host <url>', 'Fleetbase API host to store as the default host')
+    .description(`Set registry auth token (stored in ${configDisplayPath} and the instance's api/auth.json)`)
+    .action(async (token, options) => {
+        const fleetbasePath = options.path || '.';
+        const fleetbaseRegistry = normalizeHost(registryOption(options));
+        const apiHost = hostOption(options) ? normalizeHost(hostOption(options)) : null;
         console.log(`Using registry: ${fleetbaseRegistry}`);
         console.log(`Using path: ${fleetbasePath}`);
-        await setAuth(token, fleetbasePath, fleetbaseRegistry);
+        await setAuth(token, fleetbasePath, fleetbaseRegistry, apiHost);
     });
 
 program
@@ -1886,19 +2109,20 @@ program
     .option('-a, --author <author>', 'Name of the extension author')
     .option('-e, --email <email>', 'Email of the extension author')
     .option('-k, --keywords <keywords>', 'Keywords of the extension to scaffold')
-    .option('-n, --namespace <namespace>', 'PHP Namespace of the extension to scaffold')
-    .option('-r, --repo <repo>', 'Repository URL of the extension to scaffold', starterExtensionRepo.replace('.git', ''))
+    .option('--namespace <namespace>', 'PHP Namespace of the extension to scaffold')
+    .option('-r, --repo <repo>', 'Repository URL of the extension to scaffold (default: none)')
     .action(scaffoldExtension);
 
 program
     .command('install [packageName]')
     .option('-p, --path <path>', 'Path of the Fleetbase instance to install to')
+    .option('--host <url>', `Fleetbase API host (default: ${defaultHost})`)
     .description('Install a Fleetbase Extension')
-    .action(async (packageName, { path }) => {
-        const fleetbasePath = path || '.';
+    .action(async (packageName, options) => {
+        const fleetbasePath = options.path || '.';
         console.log(`Installing package: ${packageName}`);
         console.log(`Using path: ${fleetbasePath}`);
-        await installPackage(packageName, fleetbasePath);
+        await installPackage(packageName, fleetbasePath, hostOption(options));
     });
 
 program
@@ -1909,26 +2133,27 @@ program
     .option('-f, --free', 'Show only free extensions')
     .option('--json', 'Output results as raw JSON')
     .option('--simple', 'Output one extension per line: slug, name, version, price (for scripting)')
-    .option('-h, --host <host>', 'API host to fetch extensions from (default: https://api.fleetbase.io)')
+    .option('-h, --host <host>', `API host to fetch extensions from (default: ${defaultHost})`)
     .action(searchExtensionsCommand);
 
 program
     .command('uninstall [packageName]')
     .option('-p, --path <path>', 'Path of the Fleetbase instance to uninstall for')
+    .option('--host <url>', `Fleetbase API host (default: ${defaultHost})`)
     .description('Uninstall a Fleetbase Extension')
-    .action(async (packageName, { path }) => {
-        const fleetbasePath = path || '.';
+    .action(async (packageName, options) => {
+        const fleetbasePath = options.path || '.';
         console.log(`Uninstalling package: ${packageName}`);
         console.log(`Using path: ${fleetbasePath}`);
-        await uninstallPackage(packageName, fleetbasePath);
+        await uninstallPackage(packageName, fleetbasePath, hostOption(options));
     });
 
 program
     .command('publish [packagePath]')
-    .option('-r, --registry <url>', 'Registry URL the credentials are for', defaultRegistry)
+    .option('-r, --registry <url>', `Registry URL the credentials are for (default: ${defaultRegistry})`)
     .description('Publish a Fleetbase Extension')
-    .action(async (packagePath = '.', { registry }) => {
-        const fleetbaseRegistry = program.opts().registry ?? registry;
+    .action(async (packagePath = '.', options) => {
+        const fleetbaseRegistry = registryOption(options);
         console.log(`Using registry: ${fleetbaseRegistry}`);
 
         const hasPackageJson = await fs.pathExists(path.join(packagePath, 'package.json'));
@@ -1950,10 +2175,10 @@ program
 
 program
     .command('unpublish [packageName]')
-    .option('-r, --registry <url>', 'Registry URL the credentials are for', defaultRegistry)
+    .option('-r, --registry <url>', `Registry URL the credentials are for (default: ${defaultRegistry})`)
     .description('Unpublish a Fleetbase Extension')
-    .action(async (packageName, { registry }) => {
-        const fleetbaseRegistry = program.opts().registry ?? registry;
+    .action(async (packageName, options) => {
+        const fleetbaseRegistry = registryOption(options);
         console.log(`Using registry: ${fleetbaseRegistry}`);
 
         if (!packageName) {
@@ -1980,7 +2205,8 @@ program
     .description('Bundle the Fleetbase extension into a tar.gz file')
     .option('-p, --path <path>', 'Path of the Fleetbase extension to bundle', '.')
     .option('-u, --upload', 'Upload the created bundle after bundling')
-    .option('--auth-token <token>', 'Auth token for uploading the bundle')
+    .option('--auth-token <token>', `Auth token for uploading the bundle (default: token stored in ${configDisplayPath})`)
+    .option('--host <url>', `Fleetbase API host to upload to (default: ${defaultHost})`)
     .action(bundleExtension);
 
 program
@@ -1988,7 +2214,8 @@ program
     .alias('upload-bundle')
     .description('Upload a Fleetbase extension bundle')
     .option('-p, --path <path>', 'Path where the bundle is located', '.')
-    .option('--auth-token <token>', 'Auth token for uploading the bundle')
+    .option('--auth-token <token>', `Auth token for uploading the bundle (default: token stored in ${configDisplayPath})`)
+    .option('--host <url>', `Fleetbase API host to upload to (default: ${defaultHost})`)
     .action(uploadCommand);
 
 program
@@ -2008,7 +2235,7 @@ program
     .option('-e, --email <email>', 'Email address')
     .option('-p, --password <password>', 'Password')
     .option('-n, --name <name>', 'Your full name (optional)')
-    .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
+    .option('-h, --host <host>', `API host (default: ${defaultHost})`)
     .action(registerCommand);
 
 program
@@ -2016,14 +2243,15 @@ program
     .description('Verify your Registry Developer Account email')
     .option('-e, --email <email>', 'Email address')
     .option('-c, --code <code>', 'Verification code from email')
-    .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
+    .option('-h, --host <host>', `API host (default: ${defaultHost})`)
+    .option('--show-token', 'Print the issued registry token (hidden by default)')
     .action(verifyCommand);
 
 program
     .command('resend-verification')
     .description('Resend verification code to your email')
     .option('-e, --email <email>', 'Email address')
-    .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
+    .option('-h, --host <host>', `API host (default: ${defaultHost})`)
     .action(resendVerificationCommand);
 
 program
@@ -2031,7 +2259,8 @@ program
     .description('Generate or regenerate your registry authentication token')
     .option('-e, --email <email>', 'Email address')
     .option('-p, --password <password>', 'Password')
-    .option('-h, --host <host>', 'API host with protocol (default: https://api.fleetbase.io)')
+    .option('-h, --host <host>', `API host (default: ${defaultHost})`)
+    .option('--show-token', 'Print the generated registry token (hidden by default)')
     .action(generateTokenCommand);
 
 program
@@ -2050,10 +2279,33 @@ program
     .option('-u, --username <username>', 'Username for the registry')
     .option('-p, --password <password>', 'Password for the registry')
     .option('-e, --email <email>', 'Email associated with your account')
-    .option('-r, --registry <registry>', 'Registry URL', defaultRegistry)
+    .option('-r, --registry <registry>', `Registry URL (default: --host if given, else ${defaultRegistry})`)
+    .option('--host <url>', 'Self-hosted Fleetbase API host; used as the registry unless --registry is given')
     .option('--scope <scope>', 'Scope for the registry')
     .option('--quotes <quotes>', 'Quotes option for npm-cli-login')
     .option('--config-path <configPath>', 'Path to the npm config file')
     .action(loginCommand);
 
-program.parse(process.argv);
+if (require.main === module) {
+    program.parse(process.argv);
+} else {
+    // Exported for tests
+    module.exports = {
+        program,
+        defaultHost,
+        defaultRegistry,
+        configFilePath,
+        normalizeHost,
+        hostKey,
+        isDefaultHost,
+        hostFlag,
+        maskToken,
+        readConfig,
+        writeConfig,
+        updateConfig,
+        saveToken,
+        getStoredToken,
+        resolveHost,
+        registryApi,
+    };
+}
