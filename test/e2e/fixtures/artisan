@@ -1,0 +1,47 @@
+<?php
+// Stand-in for a Fleetbase API's artisan with registry-bridge's installer commands, for the CLI
+// end-to-end test. It records each call in calls.log and answers like the bridge does with --json:
+// registry:install|update|uninstall queue a job; registry:job <id> reports it running, then
+// completed (or failed at the composer stage when FLB_STUB_FAIL is set).
+
+$dir = __DIR__;
+$args = array_slice($argv, 1);
+file_put_contents("$dir/calls.log", implode(' ', $args) . "\n", FILE_APPEND);
+
+$command = $args[0] ?? 'list';
+$state = "$dir/job.state";
+
+function out(array $value): void
+{
+    echo "Some framework warning on stdout\n";
+    echo json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+}
+
+switch ($command) {
+    case 'list':
+        echo json_encode(['commands' => array_map(fn ($name) => ['name' => $name], ['registry:init', 'registry:install', 'registry:uninstall', 'registry:update', 'registry:job'])]);
+        exit(0);
+
+    case 'registry:install':
+    case 'registry:update':
+    case 'registry:uninstall':
+        file_put_contents($state, '0');
+        out(['id' => 'job_e2e', 'action' => substr($command, 9), 'status' => 'queued', 'position' => 1, 'extension' => ['name' => $args[1] ?? '']]);
+        exit(0);
+
+    case 'registry:job':
+        $polls = (int) @file_get_contents($state);
+        file_put_contents($state, (string) ($polls + 1));
+        if ($polls === 0) {
+            out(['id' => $args[1], 'status' => 'running', 'stage' => 'download', 'progress' => 20, 'message' => 'Downloading the release', 'log' => ['resolved release']]);
+        } elseif (getenv('FLB_STUB_FAIL')) {
+            out(['id' => $args[1], 'status' => 'failed', 'stage' => 'composer', 'failed_stage' => 'composer', 'message' => 'composer require failed', 'log' => ['resolved release', 'Problem 1: conflict']]);
+        } else {
+            out(['id' => $args[1], 'status' => 'completed', 'stage' => 'record', 'progress' => 100, 'log' => ['resolved release', 'composer require done', 'caches cleared']]);
+        }
+        exit(0);
+
+    default:
+        fwrite(STDERR, "Command \"$command\" is not defined.\n");
+        exit(1);
+}

@@ -1,0 +1,8 @@
+{
+    "name": "Acme Insights",
+    "version": "1.2.0",
+    "description": "Fixture extension",
+    "engine": "package.json",
+    "api": "composer.json",
+    "compat": { "console": ">=0.7.0 <0.8.0", "api": "^1.6" }
+}

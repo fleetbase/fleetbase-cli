@@ -1,432 +1,132 @@
 # Fleetbase CLI
 
-FLB (Fleetbase CLI) is a command-line interface tool designed for managing Fleetbase Extensions. It simplifies the process of publishing and managing both npm and PHP Composer packages, particularly for Fleetbase extensions.
-
-## Features
-
-- Register and manage Registry Developer Accounts for self-hosted instances
-- Publish Fleetbase Extensions to a specified registry
-- Unpublish Extensions from the registry
-- Install Fleetbase using Docker
-- Automatically convert `composer.json` to `package.json` for PHP packages
-- Scaffold new Fleetbase extensions
-- Set registry token to a Fleetbase instance
-- Search and list available extensions from the registry
-- Install and Uninstall extensions
-- Flexible registry configuration
-
-## Installation
-
-To install FLB, run the following command:
+`flb` builds and publishes Fleetbase extensions to the Fleetbase Extensions Registry, and
+installs, updates and uninstalls them on your Fleetbase instances.
 
 ```bash
 npm install -g @fleetbase/cli
+flb --help
 ```
 
-## Quick Start: Developer Account Registration
+Requires Node.js 20.10 or later. Installing Fleetbase itself moved to its own package:
+`npx @fleetbase/installer` (see [packages/installer](packages/installer)).
 
-If you're using a self-hosted Fleetbase instance and want to publish or install extensions, you'll need to register a Registry Developer Account. Follow these steps:
-
-### Step 1: Register Your Account
+## Quick start: publish an extension
 
 ```bash
-flb register --host localhost:8000
+flb register                 # or create the account on the publisher website
+flb login                    # email and password; stores a scoped token
+flb init --name "Fleet Insights"
+cd fleet-insights && pnpm install
+flb build                    # engine and api archives in .fleetbase/build/<version>
+flb publish --submit         # upload, follow the registry checks, submit for review
+flb release status           # review state, reasons and history
 ```
 
-You'll be prompted for:
-- **Username**: Your desired username (alphanumeric, hyphens, and underscores only)
-- **Email**: Your email address
-- **Password**: A secure password (minimum 8 characters)
-- **Name**: Your display name (optional)
+A first release always gets a human review; later releases with the same package names,
+price and permissions are published as soon as their checks pass.
 
-### Step 2: Verify Your Email
+## Commands
 
-Check your email for a verification code, then run:
+| Command | Does |
+| --- | --- |
+| `flb login [--email] [--password-stdin]` | Logs in with `POST /v1/auth/login` and stores a token scoped to `read, publish, instance:register` for 90 days (`--scopes`, `--expires`) |
+| `flb login --token [flbp_…]` / `--token-stdin` | Stores an existing personal token after checking it with the service |
+| `flb logout [--local]` | Revokes the token on the service and removes it from the config |
+| `flb whoami` | The account, organizations and token in use |
+| `flb register` / `flb verify [--resend]` | Account creation and email verification from the terminal |
+| `flb token create --name ci --scopes publish --expires 180d --show-token` | A new personal token, printed once (`--save` stores it instead) |
+| `flb token list` / `flb token revoke <id…>` | Masked list; revoke by `tok_` id |
+| `flb init [dir]` | Scaffolds from [fleetbase/starter-extension](https://github.com/fleetbase/starter-extension): package names under your organization, PHP namespace, engine route, and an `extension.json` with `compat` ranges |
+| `flb build [--prebuilt --console <path>]` | Engine tarball (`npm pack`), api archive (Composer layout), optional prebuilt engine dist, and `.fleetbase/release.json` |
+| `flb bump <version\|patch\|minor\|major\|prerelease>` | One version in extension.json, package.json and composer.json |
+| `flb publish [--channel beta] [--submit]` | Creates the draft listing if needed, uploads the release, streams the check results |
+| `flb release list\|status\|submit\|withdraw\|yank` | Release lifecycle, by `rel_` id or by version inside the extension |
+| `flb search [query]` / `flb info <slug>` | The public catalog |
+| `flb instance code` | A one-time registration code to paste into an instance |
+| `flb instance register` | Exchanges a code for an instance token (kept in the config file) |
+| `flb instance status\|updates\|list\|forget` | The instance as the service sees it, its licences and available updates |
+| `flb install <ext>[@version]` / `flb update` / `flb uninstall` | Runs `php artisan registry:install\|update\|uninstall` on an instance (`--path` or `--docker [service]`) and follows the job |
+| `flb doctor [--path\|--docker]` | Config, registry connectivity, token validity and scopes, instances, local tools, the instance's installer |
+| `flb config list\|get\|set\|unset\|path` | `registry` and `organization` defaults |
+
+Every command takes `--registry <url>` (or `FLB_REGISTRY`); most take `--json`.
+
+## Configuration and tokens
+
+Everything the CLI keeps is in `~/.fleetbase/config.json` (`FLEETBASE_HOME` moves the
+directory), written with mode 600 in a 700 directory:
+
+```json
+{
+    "registry": "https://registry.fleetbase.io",
+    "defaultOrganization": "acme",
+    "tokens": { "registry.fleetbase.io": "flbp_…" },
+    "hosts": {
+        "registry.fleetbase.io": {
+            "account": { "email": "dev@acme.test" },
+            "tokenId": "tok_…",
+            "scopes": ["read", "publish", "instance:register"],
+            "expiresAt": "2027-01-20T00:00:00Z",
+            "organization": "acme"
+        }
+    },
+    "instances": { "inst_…": { "registry": "https://registry.fleetbase.io", "token": "flbi_…" } }
+}
+```
+
+`host`, `registry`, `tokens` (by host) and `defaultOrganization` are the keys the 0.0.x CLI
+wrote; they are read as they are and unknown keys are kept. A 0.0.x token is not a Registry
+Service token: commands that need one ask you to `flb login` again.
+
+- No command prints a token unless you pass `--show-token`.
+- Tokens are never written anywhere but this file: no `.npmrc`, no `auth.json`, no
+  `.fleetbase/` files in your extension.
+- In CI, set `FLB_TOKEN` instead of logging in; it is never written to disk.
+
+## Building
+
+`flb build` validates `extension.json` and the package manifests with the same rules as the
+registry checks (versions must match across extension.json, package.json and composer.json;
+the api version must be one Composer can install), then writes to
+`.fleetbase/build/<version>/`:
+
+| Archive | Contents |
+| --- | --- |
+| `engine-<v>.tgz` | `npm pack` of the extension (the `package/` layout npm publishes) |
+| `api-<v>.tar.gz` | `package/` + composer.json, the directories its `autoload` maps point at, README/LICENSE/CHANGELOG; `autoload-dev` paths, `archive.exclude` patterns, vendor directories and secret-looking files (`.env`, `auth.json`, keys) are left out |
+| `dist-<v>.tar.gz` | With `--prebuilt --console <path>`: ember-core's `build-engine-release` run in a console checkout that has this version of the engine installed, as the `<package>/` folder with its `manifest.json`. `--console-dist <dir>` reuses an existing console build |
+
+The prebuilt dist needs an ember-core with runtime engines
+([fleetbase/ember-core#99](https://github.com/fleetbase/ember-core/pull/99)) in the console.
+
+## Installing on an instance
 
 ```bash
-flb verify -e your@email.com -c 123456 --host localhost:8000
+flb install pallet --path ~/fleetbase                  # a checkout with api/artisan
+flb install @fleetbase/pallet-engine@0.0.2 --docker    # inside the compose "application" service
+flb update pallet --release 0.0.3 --path ~/fleetbase/api
+flb uninstall pallet --docker application -f docker-compose.prod.yml
 ```
 
-Or use the command provided in the verification email. Upon successful verification, you'll receive your registry token.
+The CLI calls the same queued installer as the console (registry-bridge
+`registry:install|update|uninstall`, which take `--release=` because artisan reserves
+`--version`) and follows the job with `registry:job <id> --json` until it completes or fails.
+`--sync` runs the job in the artisan process; `--no-wait` returns once it is queued.
 
-### Step 3: Set Your Registry Token
-
-Use the token from the verification step:
+## Development
 
 ```bash
-flb set-auth flb_your_token_here --registry http://localhost:8000
+npm install
+npm run build
+npm test                 # Vitest unit tests
+npm run test:e2e         # against a local Registry Service, see test/e2e/run.sh
 ```
 
-### Step 4: You're Ready!
+The end-to-end script needs a running service (`php artisan migrate --seed &&
+php artisan registry:seed --seed-release && php artisan serve` with `QUEUE_CONNECTION=sync`)
+and `FLB_E2E_SERVICE` pointing at its checkout; CI runs it against `fleetbase/registry@v2`.
 
-You can now publish extensions, install extensions, and manage your Fleetbase instance through the CLI.
+## License
 
-**Note:** If you need to regenerate your token later, use:
-
-```bash
-flb generate-token -e your@email.com --host localhost:8000
-```
-
-## Usage
-
-### Registry Developer Account Commands
-
-#### Register a Developer Account
-
-Create a new Registry Developer Account for publishing and installing extensions on self-hosted instances.
-
-```bash
-flb register
-```
-
-**Options:**
-- `-u, --username <username>`: Username for your account
-- `-e, --email <email>`: Email address
-- `-p, --password <password>`: Password (minimum 8 characters)
-- `-n, --name <name>`: Display name (optional)
-- `-h, --host <host>`: API host (default: `https://api.fleetbase.io`)
-
-**Example:**
-```bash
-flb register --host localhost:8000
-flb register -u myusername -e my@email.com -p mypassword --host localhost:8000
-```
-
-#### Verify Email Address
-
-Verify your email address using the code sent to your email.
-
-```bash
-flb verify
-```
-
-**Options:**
-- `-e, --email <email>`: Email address
-- `-c, --code <code>`: Verification code from email
-- `-h, --host <host>`: API host (default: `https://api.fleetbase.io`)
-
-**Example:**
-```bash
-flb verify -e my@email.com -c 123456 --host localhost:8000
-```
-
-#### Resend Verification Code
-
-Request a new verification code if the previous one expired.
-
-```bash
-flb resend-verification
-```
-
-**Options:**
-- `-e, --email <email>`: Email address
-- `-h, --host <host>`: API host (default: `https://api.fleetbase.io`)
-
-**Example:**
-```bash
-flb resend-verification -e my@email.com --host localhost:8000
-```
-
-#### Generate or Regenerate Registry Token
-
-Generate a new registry authentication token or regenerate an existing one. Useful for existing accounts created before automatic token generation, or if you need to regenerate your token for security reasons.
-
-```bash
-flb generate-token
-```
-
-**Options:**
-- `-e, --email <email>`: Email address
-- `-p, --password <password>`: Password
-- `-h, --host <host>`: API host (default: `https://api.fleetbase.io`)
-
-**Example:**
-```bash
-flb generate-token -e my@email.com --host localhost:8000
-```
-
-**Note:** This command requires your account to be verified. Each time you generate a token, it replaces the previous one.
-
-### Installing Fleetbase
-
-Install Fleetbase using Docker with a single command.
-
-```bash
-flb install-fleetbase
-```
-
-**Options:**
-- `--host <host>`: Host or IP address to bind to (default: `localhost`)
-- `--environment <environment>`: Environment: `development` or `production` (default: `development`)
-- `--directory <directory>`: Installation directory (default: current directory)
-- `--app-name <name>`: Application name (default: `Fleetbase`)
-- `--non-interactive`: Skip every prompt and use the flags above plus safe defaults (CI/CD, scripted installs)
-
-The installer creates an empty `api/.env` (bind-mounted by `docker-compose.yml`) when one does not exist.
-
-**Example:**
-```bash
-flb install-fleetbase --host 0.0.0.0 --environment production --directory /opt/fleetbase
-```
-
-**Non-interactive example:**
-```bash
-flb install-fleetbase --non-interactive --directory /opt/fleetbase
-```
-
-### Publishing a Extension
-
-To publish a extension, navigate to the extension directory and run:
-
-```bash
-flb publish [?path]
-```
-
-- `[path]`: (Optional) The path to the extension directory to be published. Defaults to the current directory.
-
-For PHP only extensions, `flb` will automatically convert `composer.json` to `package.json` before publishing.
-
-### Unpublishing a Extension
-
-To unpublish a extension, use:
-
-```bash
-flb unpublish [extension]
-```
-
-- `[extension]`: (Optional) The name of the extension to unpublish. If not provided, FLB will attempt to determine the extension name from the current directory.
-
-### Setup Registry Auth Token
-
-To install purchased extensions you must setup authorization first which is linked to your Fleetbase account. For cloud users, you can generate a registry token at [https://console.fleetbase.io/extensions/developers/credentials](https://console.fleetbase.io/extensions/developers/credentials). For self-hosted users, use the `flb register` and `flb verify` commands to get your token.
-
-To setup registry auth use:
-
-```bash
-flb set-auth [token]
-```
-
-**Options:**
-- `-p, --path <path>`: Path of the Fleetbase instance to install setup for (default: `.`)
-- `-r, --registry <url>`: Registry URL the credentials are for (default: `https://registry.fleetbase.io`)
-
-**Example:**
-```bash
-flb set-auth flb_your_token_here --registry http://localhost:8000
-```
-
-### Login to the Fleetbase Registry
-
-Login to the Fleetbase registry. This command authenticates you with the Fleetbase registry by saving your credentials to your local `.npmrc` file.
-
-```bash
-flb login
-```
-
-**Options:**
-- `-u, --username <username>`: Username for the registry
-- `-p, --password <password>`: Password for the registry
-- `-e, --email <email>`: Email associated with your account
-- `-r, --registry <registry>`: Registry URL (default: `https://registry.fleetbase.io`)
-- `--scope <scope>`: Scope for the registry (optional)
-- `--quotes <quotes>`: Quotes option for `npm-cli-login` (optional)
-- `--config-path <configPath>`: Path to the npm config file (optional)
-
-**Example:**
-```bash
-flb login -u myusername -r http://localhost:8000
-```
-
-### Scaffolding a Extension
-
-Fleetbase CLI has the ability to scaffold a starter extension if you intend to develop your own extension. This greatly speeds up the development process as it gives you a correct starting point to build on.
-
-To scaffold a extension, use: 
-
-```bash
-flb scaffold
-```
-
-**Options:**
-- `-p, --path`: The path to place the scaffold extension
-- `-n, --name`: The name of the extension to scaffold
-- `-d, --description`: The description of the extension to scaffold
-- `-a, --author`: The name of the extension author
-- `-e, --email`: The email of the extension author
-- `-k, --keywords`: The keywords of the extension to scaffold
-- `-n, --namespace`: The PHP Namespace of the extension to scaffold
-- `-r, --repo`: The Repository URL of the extension to scaffold
-
-### Searching for Extensions
-
-Search and list all available extensions from the Fleetbase registry. Supports keyword search, category filtering, and multiple output formats.
-
-```bash
-flb search [query]
-```
-
-Alias: `flb list-extensions`
-
-**Options:**
-- `[query]`: (Optional) Search keyword to filter by name, slug, subtitle, description, or tags
-- `-c, --category <category>`: Filter by category name or slug
-- `-f, --free`: Show only free extensions
-- `--json`: Output results as raw JSON (useful for scripting)
-- `--simple`: Output one extension per line as tab-separated values: `slug`, `name`, `version`, `price`
-- `-h, --host <host>`: API host to fetch extensions from (default: `https://api.fleetbase.io`)
-
-**Examples:**
-```bash
-# List all available extensions
-flb search
-
-# Search by keyword
-flb search routing
-flb search "route optimization"
-
-# Filter by category
-flb search --category telematics
-
-# Show only free extensions
-flb search --free
-
-# Combine filters
-flb search --free --category telematics
-
-# JSON output for scripting
-flb search --json
-flb search routing --json | jq '.[].slug'
-
-# Simple tab-separated output
-flb search --simple
-
-# Search against a self-hosted instance
-flb search --host https://api.myfleetbase.com
-flb search routing --host http://localhost:8000
-```
-
-### Installing a Extension
-
-To install a extension, use: 
-
-```bash
-flb install [extension]
-```
-
-**Options:**
-- `[extension]`: The name of the extension to install
-- `-p, --path`: (Optional) The path to the fleetbase instance directory. Defaults to the current directory
-
-**Example:**
-```bash
-flb install @fleetbase/storefront-api --path /opt/fleetbase
-```
-
-### Uninstalling a Extension
-
-To uninstall a extension, use: 
-
-```bash
-flb uninstall [extension]
-```
-
-**Options:**
-- `[extension]`: The name of the extension to uninstall
-- `-p, --path`: (Optional) The path to the fleetbase instance directory. Defaults to the current directory
-
-**Example:**
-```bash
-flb uninstall @fleetbase/storefront-api --path /opt/fleetbase
-```
-
-### Bundling a Extension
-
-To bundle a extension, use: 
-
-```bash
-flb bundle
-```
-
-or to bundle and upload the created bundle, use:
-
-```bash
-flb bundle --upload
-```
-
-**Options:**
-- `-p, --path <path>`: Path of the Fleetbase extension (default: `.`)
-- `--upload`: After bundling, upload the bundle to the Fleetbase registry using your authentication token
-- `--auth-token <token>`: Auth token for uploading the bundle (used with `--upload` option)
-- `-r, --registry <registry>`: Registry URL (default: `https://registry.fleetbase.io`)
-
-### Uploading a Extension Bundle
-
-To upload an extension bundle, use:
-
-```bash
-flb bundle-upload
-```
-
-**Options:**
-- `[bundleFile]`: Path to the bundle file to upload. If not provided, it will look for the bundle in the current directory
-- `-p, --path <path>`: Path where the bundle is located (default: `.`)
-- `--auth-token <token>`: Auth token for uploading the bundle. If not provided, the token will be read from the `.npmrc` file
-- `-r, --registry <registry>`: Registry URL (default: `https://registry.fleetbase.io`)
-
-### Version Bump and Extension
-
-To bump the version on an extension, use:
-
-```bash
-flb version-bump
-```
-
-**Options:**
-- `-p, --path <path>`: Path of the Fleetbase extension (default: `.`)
-- `--major`: Bump major version (e.g., `1.0.0` → `2.0.0`)
-- `--minor`: Bump minor version (e.g., `1.0.0` → `1.1.0`)
-- `--patch`: Bump patch version (e.g., `1.0.0` → `1.0.1`). This is the default if no flag is provided
-- `--pre-release [identifier]`: Add a pre-release identifier (e.g., `1.0.0` → `1.0.0-beta`)
-
-### Setting a Custom Registry
-
-To specify a custom registry for publishing and unpublishing, use the `-r` or `--registry` option:
-
-```bash
-flb publish -r http://my-registry.com
-flb unpublish -r http://my-registry.com
-```
-
-## Configuration
-
-FLB can be configured via command-line options. The most common options include:
-
-- `-r, --registry [url]`: Specify a custom registry URL
-- `-h, --host [url]`: Specify the API host for developer account operations
-
-## Self-Hosted vs Cloud
-
-### Self-Hosted Users
-
-If you're running Fleetbase on your own infrastructure:
-
-1. Use `flb register` to create a Registry Developer Account
-2. Verify your email with `flb verify`
-3. Use the provided token with `flb set-auth`
-4. Specify `--host` parameter for all commands to point to your instance
-
-### Cloud Users
-
-If you're using Fleetbase Cloud (console.fleetbase.io):
-
-1. Generate a registry token from the Console at [Extensions > Developers > Credentials](https://console.fleetbase.io/extensions/developers/credentials)
-2. Use the token with `flb set-auth`
-3. No need to specify `--host` parameter (defaults to cloud)
-
-## Contributing
-
-Contributions to Fleetbase CLI are welcome. Please ensure that your code adheres to the project's coding standards and include tests for new features or bug fixes.
-
-# License & Copyright
-
-Fleetbase is made available under the terms of the <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank">GNU Affero General Public License 3.0 (AGPL 3.0)</a>. For other licenses <a href="mailto:hello@fleetbase.io" target="_blank">contact us</a>.
+AGPL-3.0-or-later. See [LICENSE.md](LICENSE.md).
