@@ -24,7 +24,10 @@ export function isSemver(version: string): boolean {
     return canonical === version;
 }
 export const NPM_NAME = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
-export const COMPOSER_NAME = /^[a-z0-9]([_.-]?[a-z0-9]+)*\/[a-z0-9](([_.]|-{1,2})?[a-z0-9]+)*$/;
+// Composer's vendor/package rule, written so each separator is required between alphanumeric
+// runs: the same language as Composer's `[a-z0-9]([_.-]?[a-z0-9]+)*` form without its
+// exponential backtracking (CodeQL js/redos).
+export const COMPOSER_NAME = /^[a-z0-9]+(?:[_.-][a-z0-9]+)*\/[a-z0-9]+(?:(?:[_.]|-{1,2})[a-z0-9]+)*$/;
 const RANGE_CHARS = /^[0-9A-Za-z.*^~<>=|! +-]+$/;
 const CHANNELS = ['stable', 'beta'];
 
