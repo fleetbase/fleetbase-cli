@@ -13,7 +13,7 @@ FLB (Fleetbase CLI) is a command-line interface tool designed for managing Fleet
 - Set registry token to a Fleetbase instance
 - Search and list available extensions from the registry
 - Install and Uninstall extensions
-- Flexible registry configuration
+- Flexible registry configuration: one config file (`~/.fleetbase/config.json`) and a `--host` option for self-hosted instances
 
 ## Installation
 
@@ -47,15 +47,17 @@ Check your email for a verification code, then run:
 flb verify -e your@email.com -c 123456 --host localhost:8000
 ```
 
-Or use the command provided in the verification email. Upon successful verification, you'll receive your registry token.
+Or use the command provided in the verification email. Upon successful verification, a registry token is issued and saved to `~/.fleetbase/config.json`. The token is not printed unless you pass `--show-token`.
 
 ### Step 3: Set Your Registry Token
 
-Use the token from the verification step:
+Write the token into your Fleetbase instance (the token saved in step 2 is used when none is given):
 
 ```bash
-flb set-auth flb_your_token_here --registry http://localhost:8000
+flb set-auth --registry http://localhost:8000 --host localhost:8000 --path /path/to/fleetbase
 ```
+
+Passing `--host` here also stores `localhost:8000` as the default API host in `~/.fleetbase/config.json`, so later commands such as `flb install` or `flb search` no longer need `--host`.
 
 ### Step 4: You're Ready!
 
@@ -94,7 +96,7 @@ flb register -u myusername -e my@email.com -p mypassword --host localhost:8000
 
 #### Verify Email Address
 
-Verify your email address using the code sent to your email.
+Verify your email address using the code sent to your email. On success the issued registry token is saved to `~/.fleetbase/config.json` (keyed by API host) and shown masked.
 
 ```bash
 flb verify
@@ -104,6 +106,7 @@ flb verify
 - `-e, --email <email>`: Email address
 - `-c, --code <code>`: Verification code from email
 - `-h, --host <host>`: API host (default: `https://api.fleetbase.io`)
+- `--show-token`: Print the issued token in full (hidden by default)
 
 **Example:**
 ```bash
@@ -139,13 +142,14 @@ flb generate-token
 - `-e, --email <email>`: Email address
 - `-p, --password <password>`: Password
 - `-h, --host <host>`: API host (default: `https://api.fleetbase.io`)
+- `--show-token`: Print the generated token in full (hidden by default)
 
 **Example:**
 ```bash
 flb generate-token -e my@email.com --host localhost:8000
 ```
 
-**Note:** This command requires your account to be verified. Each time you generate a token, it replaces the previous one.
+**Note:** This command requires your account to be verified. Each time you generate a token, it replaces the previous one. The new token is saved to `~/.fleetbase/config.json`.
 
 ### Installing Fleetbase
 
@@ -206,13 +210,17 @@ To setup registry auth use:
 flb set-auth [token]
 ```
 
+`set-auth` stores the token in `~/.fleetbase/config.json` (keyed by registry host) and writes a `bearer` entry for Composer into `<instance>/api/auth.json`. It no longer appends to `<instance>/console/.npmrc`. If `[token]` is omitted, the token previously saved by `flb verify`, `flb generate-token` or `flb set-auth` for that host is reused.
+
 **Options:**
+- `[token]`: Registry token (optional when one is already stored for the registry or API host)
 - `-p, --path <path>`: Path of the Fleetbase instance to install setup for (default: `.`)
 - `-r, --registry <url>`: Registry URL the credentials are for (default: `https://registry.fleetbase.io`)
+- `--host <url>`: Fleetbase API host; also saved as the default host in `~/.fleetbase/config.json`
 
 **Example:**
 ```bash
-flb set-auth flb_your_token_here --registry http://localhost:8000
+flb set-auth flb_your_token_here --registry http://localhost:8000 --host localhost:8000
 ```
 
 ### Login to the Fleetbase Registry
@@ -227,14 +235,17 @@ flb login
 - `-u, --username <username>`: Username for the registry
 - `-p, --password <password>`: Password for the registry
 - `-e, --email <email>`: Email associated with your account
-- `-r, --registry <registry>`: Registry URL (default: `https://registry.fleetbase.io`)
+- `-r, --registry <registry>`: Registry URL (default: `--host` if given, otherwise `https://registry.fleetbase.io`)
+- `--host <url>`: Self-hosted Fleetbase API host; used as the registry unless `--registry` is given
 - `--scope <scope>`: Scope for the registry (optional)
 - `--quotes <quotes>`: Quotes option for `npm-cli-login` (optional)
 - `--config-path <configPath>`: Path to the npm config file (optional)
 
+The command exits with a non-zero status if the login fails.
+
 **Example:**
 ```bash
-flb login -u myusername -r http://localhost:8000
+flb login -u myusername -p mypassword -e my@email.com --host localhost:8000
 ```
 
 ### Scaffolding a Extension
@@ -254,8 +265,8 @@ flb scaffold
 - `-a, --author`: The name of the extension author
 - `-e, --email`: The email of the extension author
 - `-k, --keywords`: The keywords of the extension to scaffold
-- `-n, --namespace`: The PHP Namespace of the extension to scaffold
-- `-r, --repo`: The Repository URL of the extension to scaffold
+- `--namespace`: The PHP Namespace of the extension to scaffold
+- `-r, --repo`: The Repository URL of the extension to scaffold (default: none; `extension.json` and `package.json` get no `repository` unless you provide one)
 
 ### Searching for Extensions
 
@@ -273,7 +284,7 @@ Alias: `flb list-extensions`
 - `-f, --free`: Show only free extensions
 - `--json`: Output results as raw JSON (useful for scripting)
 - `--simple`: Output one extension per line as tab-separated values: `slug`, `name`, `version`, `price`
-- `-h, --host <host>`: API host to fetch extensions from (default: `https://api.fleetbase.io`)
+- `-h, --host <host>`: API host to fetch extensions from (default: host in `~/.fleetbase/config.json`, then `https://api.fleetbase.io`)
 
 **Examples:**
 ```bash
@@ -316,10 +327,14 @@ flb install [extension]
 **Options:**
 - `[extension]`: The name of the extension to install
 - `-p, --path`: (Optional) The path to the fleetbase instance directory. Defaults to the current directory
+- `--host <url>`: (Optional) Fleetbase API host used to look up the package (default: host in `~/.fleetbase/config.json`, then `https://api.fleetbase.io`)
+
+The command exits with a non-zero status if the lookup or installation fails.
 
 **Example:**
 ```bash
 flb install @fleetbase/storefront-api --path /opt/fleetbase
+flb install @fleetbase/storefront-api --path /opt/fleetbase --host localhost:8000
 ```
 
 ### Uninstalling a Extension
@@ -333,6 +348,7 @@ flb uninstall [extension]
 **Options:**
 - `[extension]`: The name of the extension to uninstall
 - `-p, --path`: (Optional) The path to the fleetbase instance directory. Defaults to the current directory
+- `--host <url>`: (Optional) Fleetbase API host used to look up the package (default: host in `~/.fleetbase/config.json`, then `https://api.fleetbase.io`)
 
 **Example:**
 ```bash
@@ -356,8 +372,8 @@ flb bundle --upload
 **Options:**
 - `-p, --path <path>`: Path of the Fleetbase extension (default: `.`)
 - `--upload`: After bundling, upload the bundle to the Fleetbase registry using your authentication token
-- `--auth-token <token>`: Auth token for uploading the bundle (used with `--upload` option)
-- `-r, --registry <registry>`: Registry URL (default: `https://registry.fleetbase.io`)
+- `--auth-token <token>`: Auth token for uploading the bundle (used with `--upload` option). Defaults to the token stored in `~/.fleetbase/config.json` for the API host (then the registry host)
+- `--host <url>`: Fleetbase API host to upload to (default: host in `~/.fleetbase/config.json`, then `https://api.fleetbase.io`)
 
 ### Uploading a Extension Bundle
 
@@ -367,11 +383,13 @@ To upload an extension bundle, use:
 flb bundle-upload
 ```
 
+Alias: `flb upload-bundle`
+
 **Options:**
-- `[bundleFile]`: Path to the bundle file to upload. If not provided, it will look for the bundle in the current directory
+- `[bundleFile]`: Path to the bundle file to upload. If not provided, it will look for the latest bundle in the current directory
 - `-p, --path <path>`: Path where the bundle is located (default: `.`)
-- `--auth-token <token>`: Auth token for uploading the bundle. If not provided, the token will be read from the `.npmrc` file
-- `-r, --registry <registry>`: Registry URL (default: `https://registry.fleetbase.io`)
+- `--auth-token <token>`: Auth token for uploading the bundle. If not provided, the token is read from `~/.fleetbase/config.json` (never from `.npmrc`)
+- `--host <url>`: Fleetbase API host to upload to (default: host in `~/.fleetbase/config.json`, then `https://api.fleetbase.io`)
 
 ### Version Bump and Extension
 
@@ -399,10 +417,40 @@ flb unpublish -r http://my-registry.com
 
 ## Configuration
 
-FLB can be configured via command-line options. The most common options include:
+### Config file
 
-- `-r, --registry [url]`: Specify a custom registry URL
-- `-h, --host [url]`: Specify the API host for developer account operations
+FLB keeps its settings in `~/.fleetbase/config.json` (override the directory with the `FLEETBASE_HOME` environment variable). The file is created with mode `0600` and looks like:
+
+```json
+{
+    "host": "http://localhost:8000",
+    "registry": "http://localhost:8000",
+    "tokens": {
+        "localhost:8000": "flb_...",
+        "api.fleetbase.io": "flb_..."
+    },
+    "defaultOrganization": null
+}
+```
+
+- `host`: default API host used when `--host` is not given
+- `tokens`: registry tokens keyed by host (`host[:port]`). Written by `flb verify`, `flb generate-token` and `flb set-auth`; read by `flb bundle --upload`, `flb bundle-upload` and `flb set-auth`
+- `registry` and `defaultOrganization` are reserved for upcoming CLI features
+
+### Global options
+
+- `--host <url>`: Fleetbase API host. Precedence: `--host` flag > `host` in `~/.fleetbase/config.json` > `https://api.fleetbase.io`. Accepted on `install`, `uninstall`, `bundle`, `bundle-upload`, `search`, `register`, `verify`, `resend-verification`, `generate-token`, `login` and `set-auth`, or globally before the command (`flb --host localhost:8000 install ...`)
+- `-r, --registry [url]`: Specify a custom registry URL (default: `https://registry.fleetbase.io`)
+
+Global options are positional: when given before the command name they apply to every command; `install-fleetbase --host` keeps its own meaning (the address to bind to).
+
+### Host normalisation
+
+A host may be given with or without a scheme:
+
+- an existing scheme is kept (`https://api.example.com`, `http://localhost:8000`)
+- `localhost`, `127.0.0.1` and hosts with an explicit port get `http://` (`localhost:8000` → `http://localhost:8000`)
+- everything else gets `https://` (`api.example.com` → `https://api.example.com`)
 
 ## Self-Hosted vs Cloud
 
@@ -410,10 +458,10 @@ FLB can be configured via command-line options. The most common options include:
 
 If you're running Fleetbase on your own infrastructure:
 
-1. Use `flb register` to create a Registry Developer Account
-2. Verify your email with `flb verify`
-3. Use the provided token with `flb set-auth`
-4. Specify `--host` parameter for all commands to point to your instance
+1. Use `flb register --host <your-api-host>` to create a Registry Developer Account
+2. Verify your email with `flb verify --host <your-api-host>`; the token is saved to `~/.fleetbase/config.json`
+3. Run `flb set-auth --registry <your-api-host> --host <your-api-host> --path <instance>` to configure your instance and store the default host
+4. Later commands use the stored host; pass `--host` to override it per command
 
 ### Cloud Users
 
@@ -426,6 +474,12 @@ If you're using Fleetbase Cloud (console.fleetbase.io):
 ## Contributing
 
 Contributions to Fleetbase CLI are welcome. Please ensure that your code adheres to the project's coding standards and include tests for new features or bug fixes.
+
+Run the test suite with:
+
+```bash
+npm test
+```
 
 # License & Copyright
 
