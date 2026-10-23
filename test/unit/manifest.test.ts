@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { composerInstallable, loadExtension, ManifestError, validRange, validateManifest } from '../../src/manifest.js';
+import { composerInstallable, isSemver, loadExtension, ManifestError, validRange, validateManifest } from '../../src/manifest.js';
 import { copyFixture } from './helpers.js';
 
 const valid = { name: 'Acme', version: '1.0.0', engine: 'package.json', api: 'composer.json', compat: { console: '>=0.7.0 <0.8.0', api: '^1.6' } };
@@ -81,5 +81,26 @@ describe('loadExtension', () => {
 
     it('says how to start when there is no extension.json', () => {
         expect(() => loadExtension('/')).toThrow(/flb init/);
+    });
+});
+
+describe('isSemver', () => {
+    it('accepts strict SemVer 2.0.0 versions', () => {
+        for (const version of ['0.0.1', '1.2.3', '1.0.0-beta.1', '1.0.0-0.3.7', '1.0.0-x.7.z.92', '1.0.0+build.5']) {
+            expect(isSemver(version)).toBe(true);
+        }
+    });
+
+    it('rejects loose or malformed versions', () => {
+        for (const version of ['v1.0.0', '=1.0.0', '1.0', '01.0.0', '1.0.0-01', '']) {
+            expect(isSemver(version)).toBe(false);
+        }
+    });
+
+    it('answers quickly on a long numeric prerelease and rejects versions over 256 characters', () => {
+        const started = Date.now();
+        expect(isSemver(`1.0.0-${'0'.repeat(240)}x`)).toBe(true);
+        expect(isSemver(`1.0.0-${'0'.repeat(50_000)}x`)).toBe(false);
+        expect(Date.now() - started).toBeLessThan(1000);
     });
 });

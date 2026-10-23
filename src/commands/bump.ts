@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Command } from 'commander';
 import semver from 'semver';
-import { findExtensionRoot, SEMVER } from '../manifest.js';
+import { findExtensionRoot, isSemver } from '../manifest.js';
 import { log } from '../output.js';
 import { CliError } from '../util.js';
 
@@ -41,7 +41,7 @@ export function bump(root: string, target: string, preid = 'beta'): string {
     } else {
         next = target.replace(/^v/, '');
     }
-    if (!next || !SEMVER.test(next)) {
+    if (!next || !isSemver(next)) {
         throw new CliError(`"${target}" is not a version or one of ${RELEASES.join(', ')}.`);
     }
 

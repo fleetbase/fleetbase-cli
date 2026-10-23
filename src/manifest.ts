@@ -9,7 +9,20 @@ import { CliError } from './util.js';
  * Schema: registry-bridge `server/resources/schemas/extension.schema.json` (draft 2020-12).
  */
 
-export const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
+/**
+ * Strict SemVer 2.0.0: the parsed, canonical form (build metadata included) must equal the
+ * input, which rejects loose forms such as `v1.0.0` or `=1.0.0`. Replaces a regex that CodeQL
+ * flagged for exponential backtracking on long numeric prerelease identifiers.
+ */
+export function isSemver(version: string): boolean {
+    const parsed = semver.parse(version);
+    if (!parsed) {
+        return false;
+    }
+    const canonical = parsed.build.length > 0 ? `${parsed.version}+${parsed.build.join('.')}` : parsed.version;
+
+    return canonical === version;
+}
 export const NPM_NAME = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
 export const COMPOSER_NAME = /^[a-z0-9]([_.-]?[a-z0-9]+)*\/[a-z0-9](([_.]|-{1,2})?[a-z0-9]+)*$/;
 const RANGE_CHARS = /^[0-9A-Za-z.*^~<>=|! +-]+$/;
@@ -109,7 +122,7 @@ export function validateManifest(manifest: Record<string, any>): string[] {
     if (typeof manifest.name !== 'string' || manifest.name.trim() === '' || manifest.name.length > 120) {
         problems.push('`name` must be a non-empty string of at most 120 characters.');
     }
-    if (typeof manifest.version !== 'string' || !SEMVER.test(manifest.version)) {
+    if (typeof manifest.version !== 'string' || !isSemver(manifest.version)) {
         problems.push('`version` must be a semantic version without a leading v (for example 1.2.0).');
     }
     if (manifest.engine === undefined && manifest.api === undefined) {
@@ -196,7 +209,7 @@ export function loadExtension(start = '.'): LoadedExtension {
             if (json.version !== undefined && json.version !== manifest.version) {
                 problems.push(`composer.json version ${json.version} does not match extension.json version ${manifest.version} (remove it from composer.json or keep them equal; \`flb bump\` updates all three).`);
             }
-            if (typeof manifest.version === 'string' && SEMVER.test(manifest.version) && !composerInstallable(manifest.version)) {
+            if (typeof manifest.version === 'string' && isSemver(manifest.version) && !composerInstallable(manifest.version)) {
                 problems.push(`Composer cannot install version ${manifest.version}: use -alpha, -beta or -RC pre-release suffixes when the extension has an api.`);
             }
             api = { name: json.name, version: json.version, file, json };

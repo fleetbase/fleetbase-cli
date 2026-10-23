@@ -203,6 +203,11 @@ function escapeHtml(value: string): string {
     return value.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
 }
 
+/** Escape a value for a single-quoted JS or PHP string literal: backslashes first, then quotes. */
+function quoteSingle(value: string): string {
+    return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
 function replacements(names: Names, description: string): [RegExp, string][] {
     const ns = names.namespace;
     const nsEscaped = ns.replace(/\\/g, '\\\\');
@@ -218,13 +223,13 @@ function replacements(names: Names, description: string): [RegExp, string][] {
         [/config\('starter\./g, `config('${names.slug}.`],
         [/'prefix' => 'starter'/g, `'prefix' => '${names.slug}'`],
         [/, 'starter'\)/g, `, '${names.slug}')`],
-        [/registerHeaderMenuItem\('Starter'/g, `registerHeaderMenuItem('${names.name.replace(/'/g, "\\'")}'`],
+        [/registerHeaderMenuItem\('Starter'/g, `registerHeaderMenuItem('${quoteSingle(names.name)}'`],
         [/^starter:/gm, `${names.slug}:`],
         [/extension-name: Starter/g, `extension-name: ${names.name}`],
         [/starter-virtual-/g, `${names.slug}-virtual-`],
         [/Starter API Routes/g, `${names.name} API Routes`],
         [/Starter extension service provider/g, `${names.name} extension service provider`],
-        [/'Samp?le starter extension for developing in Fleetbase\.'/g, `'${description.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`],
+        [/'Samp?le starter extension for developing in Fleetbase\.'/g, `'${quoteSingle(description)}'`],
         [/Welcome to your Fleetbase starter extension\./g, `Welcome to ${escapeHtml(names.name)}.`],
     ];
 }
