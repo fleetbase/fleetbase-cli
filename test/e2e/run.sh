@@ -11,9 +11,10 @@
 # with QUEUE_CONNECTION=sync, or a queue worker beside it.
 #
 # Covers: register, verify, login, whoami, token create/list/revoke, init, build, publish (checks
-# streamed), release list/status/submit/yank, staff approval through the admin API, search, info,
-# a second release auto-published by the review policy, a beta channel release, instance
-# code/register/status, install/update/uninstall through a stub artisan, doctor, logout, and that no
+# streamed), listing show/update/categories/list, release list/status/submit/yank, staff approval
+# through the admin API, search, info, a second release auto-published by the review policy, a beta
+# channel release, instance code/register/status (token kept here, and handed to the instance with
+# registry:register), install/update/uninstall through a stub artisan, doctor, logout, and that no
 # token is printed or written outside the config file.
 set -euo pipefail
 
@@ -100,12 +101,21 @@ SLUG="$(grep -oE 'Created the draft listing [a-z0-9-]+' "$OUT" | awk '{print $NF
 [ -n "$SLUG" ] || fail "no listing slug in the publish output"
 REL1="$(grep -oE 'rel_[a-z0-9]+' "$OUT" | head -1)"
 
-step "complete the listing (publisher website stand-in) and submit"
-api PATCH "/v1/publisher/extensions/$SLUG" "$CI_TOKEN" -d '{
-    "subtitle": "End-to-end test extension", "description": "Built and published by the CLI end-to-end test.",
-    "promotional_text": "Proves flb init, build and publish", "tags": ["e2e"], "copyright": "E2E",
-    "website_url": "https://example.com", "support_url": "https://example.com/support",
-    "privacy_url": "https://example.com/privacy", "fa_icon": "flask", "category": "telematics"}' >/dev/null || fail "listing update"
+step "complete the listing with flb listing, then submit"
+run listing show
+contains "still needed"; contains "The listing needs a subtitle."
+run listing categories
+contains "telematics"
+run --expect 1 listing update --category no-such-category
+run listing update --subtitle "End-to-end test extension" --description "Built and published by the CLI end-to-end test." \
+    --promotional-text "Proves flb init, build and publish" --tags e2e,cli --copyright "E2E" \
+    --website https://example.com --support https://example.com/support --privacy https://example.com/privacy
+contains "still needed"; contains "an icon"
+printf '{"fa_icon": "flask", "category": "telematics"}' > "$WORK/listing.json"
+run listing update --file "$WORK/listing.json"
+contains "ready"
+run listing list
+contains "$SLUG"
 run release submit "$REL1"
 contains "submitted"
 run release status
@@ -170,12 +180,25 @@ contains "Registered e2e-instance"
 grep -q '"flbi_' "$FLEETBASE_HOME/config.json" || fail "instance token not in config.json"
 run instance status
 contains "e2e-instance"; contains "active"
-run instance list
-no_tokens instance list
 
-step "install, update and uninstall through artisan"
+step "instance registration handed to the instance (registry:register)"
 INSTANCE="$WORK/instance"; mkdir -p "$INSTANCE"
 cp "$ROOT/test/e2e/fixtures/artisan" "$INSTANCE/artisan"
+run instance register --path "$INSTANCE" --name e2e-server
+no_tokens instance register --path
+contains "Registered e2e-server"; contains "keeps its token"
+grep -q 'flbi_' "$INSTANCE/settings.json" || fail "the instance did not store its token"
+grep -q -- 'registry:register --code-stdin --service-url=' "$INSTANCE/calls.log" || fail "registry:register arguments"
+if grep -Eq '[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}' "$INSTANCE/calls.log"; then fail "the registration code was passed in argv"; fi
+SERVER_ID="$(grep -oE 'inst_[a-z0-9]+' "$OUT" | head -1)"
+node -e 'const c=require(process.argv[1]); const e=c.instances[process.argv[2]]; if (!e || e.token) process.exit(1);' "$FLEETBASE_HOME/config.json" "$SERVER_ID" || fail "the CLI kept a token for an instance that holds its own"
+run --expect 1 instance status
+contains "keeps its token on the instance"
+run instance list
+no_tokens instance list
+contains "on the instance"
+
+step "install, update and uninstall through artisan"
 run install "$SLUG@0.2.0" --path "$INSTANCE"
 contains "Install of $SLUG@0.2.0 completed"
 grep -q "registry:install $SLUG --release=0.2.0" "$INSTANCE/calls.log" || fail "artisan got the wrong arguments"
@@ -186,7 +209,7 @@ contains "failed at composer"
 
 step "doctor"
 run doctor --path "$INSTANCE"
-contains "✓ token"; contains "✓ registry"; contains "instance installer"
+contains "✓ token"; contains "✓ registry"; contains "instance installer"; contains "registry:register available"
 
 step "revoke and logout"
 run token revoke "$CI_TOKEN_ID"
@@ -196,7 +219,7 @@ contains "revoked"
 run --expect 1 whoami
 contains "Not logged in"
 
-step "no token outside the config file"
-if grep -rlE 'flb[pi]_[A-Za-z0-9]{40}' "$WORK" --exclude=config.json --exclude=out.log 2>/dev/null | grep -v "^$WORK/reviewer"; then fail "a token was written outside config.json"; fi
+step "no token outside the config file (settings.json is the stub instance's own storage)"
+if grep -rlE 'flb[pi]_[A-Za-z0-9]{40}' "$WORK" --exclude=config.json --exclude=out.log --exclude=settings.json 2>/dev/null | grep -v "^$WORK/reviewer"; then fail "a token was written outside config.json"; fi
 
 printf '\n\033[32mE2E passed\033[0m\n'

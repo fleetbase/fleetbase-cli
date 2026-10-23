@@ -125,6 +125,10 @@ export async function diagnose(options: DiagnoseOptions): Promise<Finding[]> {
     // instances
     if (reachable) {
         for (const entry of instancesFor(config, registry)) {
+            if (!entry.token) {
+                add(`instance ${entry.id}`, 'ok', `${entry.name || entry.id}: token held by the instance (${entry.target?.path || 'remote'})`);
+                continue;
+            }
             try {
                 const me = await client.get<{ instance: { status: string; name: string } }>('v1/instances/me', { token: entry.token });
                 add(`instance ${entry.id}`, me.instance.status === 'active' ? 'ok' : 'warn', `${me.instance.name}: ${me.instance.status}`);
@@ -175,6 +179,7 @@ export async function diagnose(options: DiagnoseOptions): Promise<Finding[]> {
             const missing = needed.filter((name) => !commands.includes(name));
             add('instance installer', missing.length ? 'fail' : 'ok', missing.length ? `${artisan.describe()}: missing ${missing.join(', ')} (update registry-bridge)` : artisan.describe());
             add('installer job status', commands.includes('registry:job') ? 'ok' : 'warn', commands.includes('registry:job') ? 'registry:job available' : 'no registry:job command: flb install cannot follow queued jobs (use --sync)');
+            add('instance registration', commands.includes('registry:register') ? 'ok' : 'warn', commands.includes('registry:register') ? 'registry:register available' : 'no registry:register command: flb instance register --path cannot register the instance (update registry-bridge)');
         } catch (error) {
             add('instance installer', 'fail', (error as Error).message);
         }

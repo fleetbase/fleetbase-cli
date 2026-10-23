@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Command } from 'commander';
 import { INSTANCE_TOKEN, configDisplayPath, getToken, hostMeta, instancesFor, type InstanceEntry, maskToken, removeInstance, saveInstance, updateConfig } from '../config.js';
+import { Artisan, resolveTarget, type Target } from '../artisan.js';
 import { type Context, context, registryFlag } from '../context.js';
 import { ApiError } from '../http.js';
 import { colors, formatDate, log, table } from '../output.js';
@@ -30,16 +31,20 @@ export function register(program: Command): void {
 
     instance
         .command('register')
-        .description('Register an instance and store its instance token in the config')
+        .description('Register an instance: on the instance itself with --path/--docker, else keep its token in the config')
         .option('--code <code>', 'registration code (default: mint one with your login)')
         .option('-o, --organization <slug>', 'organization, when minting the code')
-        .option('-n, --name <name>', 'instance name', os.hostname())
+        .option('-p, --path <path>', 'Fleetbase checkout or API directory to register (runs php artisan registry:register there)')
+        .option('-d, --docker [service]', 'register the instance inside this docker compose service (default service: application)')
+        .option('-f, --compose-file <file>', 'docker compose file (default: the one in --path)')
+        .option('--service-url <url>', 'Registry Service URL as the instance reaches it (default: the registry this CLI uses)')
+        .option('--store-token', 'exchange the code here and keep the instance token in the config, even with --path')
+        .option('-n, --name <name>', 'instance name (default: the instance app name, or this hostname with --store-token)')
         .option('--host <url>', 'the instance URL (its app.url)')
-        .option('--kind <kind>', 'self_hosted or cloud', 'self_hosted')
-        .option('-p, --path <path>', 'Fleetbase checkout, to read the console and core-api versions from')
+        .option('--kind <kind>', 'self_hosted or cloud (with --store-token; an instance reports its own)', 'self_hosted')
         .option('--console-version <version>', 'console version (default: read from --path)')
-        .option('--api-version <version>', 'core-api version (default: read from --path)')
-        .option('--show-token', 'print the instance token (hidden by default)')
+        .option('--api-version <version>', 'core-api version, with --store-token (default: read from --path)')
+        .option('--show-token', 'print the instance token, with --store-token (hidden by default)')
         .option('--json', 'print JSON')
         .action((opts, command: Command) => registerInstance(context(command), opts));
 
@@ -144,35 +149,112 @@ export function detectVersions(dir: string): { console?: string; api?: string } 
 interface RegisterOptions {
     code?: string;
     organization?: string;
-    name: string;
+    path?: string;
+    docker?: string | boolean;
+    composeFile?: string;
+    serviceUrl?: string;
+    storeToken?: boolean;
+    name?: string;
     host?: string;
     kind: string;
-    path?: string;
     consoleVersion?: string;
     apiVersion?: string;
     showToken?: boolean;
+}
+
+/** Hand the registration to the instance when there is one to hand it to. */
+function instanceTarget(opts: RegisterOptions): Target | null {
+    if (opts.storeToken) {
+        return null;
+    }
+    if (opts.docker) {
+        return resolveTarget(opts);
+    }
+    if (opts.path) {
+        try {
+            return resolveTarget({ path: opts.path });
+        } catch {
+            return null;
+        }
+    }
+    return null;
+}
+
+async function obtainCode(ctx: Context, opts: RegisterOptions): Promise<string> {
+    if (opts.code) {
+        return opts.code.trim().toUpperCase();
+    }
+    if (getToken(ctx.config, ctx.registry)) {
+        const minted = await requestCode(ctx, ctx.organization(opts.organization));
+        log.step(`Minted a registration code for ${minted.organization}`);
+        return minted.code;
+    }
+    return (await ask('Registration code (XXXX-XXXX-XXXX-XXXX)', '--code')).trim().toUpperCase();
 }
 
 async function registerInstance(ctx: Context, opts: RegisterOptions): Promise<void> {
     if (!['self_hosted', 'cloud'].includes(opts.kind)) {
         throw new CliError('--kind must be self_hosted or cloud.');
     }
+    const target = instanceTarget(opts);
+    if (target && opts.showToken) {
+        throw new CliError('The instance keeps its own token, so there is none to show; pass --store-token to keep it in the config instead.');
+    }
+    const code = await obtainCode(ctx, opts);
+    return target ? registerOnInstance(ctx, opts, target, code) : registerHere(ctx, opts, code);
+}
 
-    let code = opts.code;
-    if (!code) {
-        if (getToken(ctx.config, ctx.registry)) {
-            const minted = await requestCode(ctx, ctx.organization(opts.organization));
-            code = minted.code;
-            log.step(`Minted a registration code for ${minted.organization}`);
-        } else {
-            code = await ask('Registration code (XXXX-XXXX-XXXX-XXXX)', '--code');
-        }
+/** `php artisan registry:register` on the instance; the code goes over stdin and the token never leaves it. */
+async function registerOnInstance(ctx: Context, opts: RegisterOptions, target: Target, code: string): Promise<void> {
+    const artisan = new Artisan(target);
+    const args = [
+        'registry:register',
+        '--code-stdin',
+        `--service-url=${opts.serviceUrl || ctx.registry}`,
+        ...(opts.name ? [`--name=${opts.name}`] : []),
+        ...(opts.host ? [`--host=${opts.host}`] : []),
+        ...(opts.consoleVersion ? [`--console-version=${opts.consoleVersion}`] : []),
+        '--json',
+    ];
+    log.step(`Registering ${artisan.describe()}`);
+    const { result, data, missing } = await artisan.json(args, { input: code + '\n' });
+    if (missing) {
+        throw new CliError("This instance's registry-bridge has no registry:register command.", 1, ['Update fleetbase/registry-bridge, or rerun with --store-token to keep the instance token in the config.']);
+    }
+    if (!data) {
+        throw new CliError(`php artisan registry:register failed (exit ${result.code}):\n${(result.stderr || result.stdout).trim().split('\n').slice(-20).join('\n')}`);
+    }
+    if (data.error) {
+        throw new CliError(`Registration refused: ${data.error}`, 1, ['Codes are single use and expire after 15 minutes; mint a new one with `flb instance code`.']);
     }
 
+    const summary = data as { id: string; name?: string; kind?: string; status?: string; organization?: { id?: string; slug?: string; name?: string }; service_url?: string; token_hint?: string };
+    const entry: InstanceEntry = {
+        id: summary.id,
+        name: summary.name,
+        kind: summary.kind,
+        registry: ctx.registry,
+        organization: summary.organization,
+        tokenHint: summary.token_hint,
+        target: { path: target.cwd, ...(target.kind === 'docker' ? { docker: target.service, ...(target.composeFile ? { composeFile: target.composeFile } : {}) } : {}) },
+        registeredAt: new Date().toISOString(),
+    };
+    updateConfig((config) => saveInstance(config, entry));
+
+    if (ctx.json) {
+        log.json(summary);
+        return;
+    }
+    log.success(`Registered ${summary.name || summary.id} (${summary.id})${summary.organization?.slug ? ` in ${summary.organization.slug}` : ''}.`);
+    log.info(`  the instance keeps its token (${summary.token_hint || 'flbi_…'}) in its encrypted settings; nothing secret was written here`);
+}
+
+/** Exchange the code from this machine and keep the instance token in the config. */
+async function registerHere(ctx: Context, opts: RegisterOptions, code: string): Promise<void> {
     const detected = opts.path ? detectVersions(opts.path) : {};
     const body = {
-        code: code.trim().toUpperCase(),
-        name: opts.name,
+        code,
+        name: opts.name || os.hostname(),
         kind: opts.kind,
         ...(opts.host ? { host: opts.host } : {}),
         ...((opts.consoleVersion || detected.console) ? { console_version: opts.consoleVersion || detected.console } : {}),
@@ -211,19 +293,27 @@ async function registerInstance(ctx: Context, opts: RegisterOptions): Promise<vo
     }
     log.success(`Registered ${result.instance.name} (${result.instance.id}) in ${result.instance.organization.slug} as ${result.instance.kind}.`);
     log.info(`  instance token ${maskToken(result.token)} saved to ${configDisplayPath()}`);
+    if (!opts.storeToken) {
+        log.info('  To register a Fleetbase instance itself, pass --path <checkout> or --docker; this token is only for `flb instance status` and `updates`.');
+    }
     if (opts.showToken) {
         log.secret(result.token);
     }
 }
 
-function pickInstance(ctx: Context, id?: string): InstanceEntry {
+function pickInstance(ctx: Context, id?: string): InstanceEntry & { token: string } {
     const entries = instancesFor(ctx.config, ctx.registry);
     const wanted = id || hostMeta(ctx.config, ctx.registry).instance;
     const entry = wanted ? ctx.config.instances?.[wanted] : entries[entries.length - 1];
     if (!entry) {
         throw new CliError(id ? `No instance ${id} in ${configDisplayPath()}.` : `No instance registered for ${ctx.host} from this machine.`, 1, ['Register one with `flb instance register`.']);
     }
-    return entry;
+    if (!entry.token) {
+        throw new CliError(`${entry.id} keeps its token on the instance (${entry.target?.path || 'registered with --path or --docker'}), so this machine cannot query the service as it.`, 1, [
+            'See it in the console (Extensions > Registry settings), or check the installer with `flb doctor --path`.',
+        ]);
+    }
+    return entry as InstanceEntry & { token: string };
 }
 
 async function instanceStatus(ctx: Context, id?: string): Promise<void> {
@@ -295,7 +385,7 @@ function listInstances(ctx: Context): void {
             { header: 'NAME', value: (e) => e.name || '' },
             { header: 'ORG', value: (e) => e.organization?.slug || '' },
             { header: 'KIND', value: (e) => e.kind || '' },
-            { header: 'TOKEN', value: (e) => maskToken(e.token) },
+            { header: 'TOKEN', value: (e) => (e.token ? maskToken(e.token) : `${e.tokenHint || 'flbi_…'} on the instance`) },
             { header: 'REGISTERED', value: (e) => formatDate(e.registeredAt) },
         ]),
     );

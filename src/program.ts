@@ -14,6 +14,7 @@ import * as init from './commands/init.js';
 import * as installer from './commands/installer.js';
 import * as instance from './commands/instance.js';
 import * as legacy from './commands/legacy.js';
+import * as listing from './commands/listing.js';
 import * as publish from './commands/publish.js';
 import * as release from './commands/release.js';
 import * as token from './commands/token.js';
@@ -28,7 +29,7 @@ export function createProgram(): Command {
         .showHelpAfterError('(run with --help for usage)')
         .configureHelp({ sortSubcommands: false });
 
-    for (const module of [auth, token, init, build, bump, publish, release, catalog, instance, installer, doctor, config, legacy]) {
+    for (const module of [auth, token, init, build, bump, publish, release, listing, catalog, instance, installer, doctor, config, legacy]) {
         module.register(program);
     }
     return program;

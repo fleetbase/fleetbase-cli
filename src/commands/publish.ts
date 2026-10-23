@@ -194,7 +194,7 @@ function summarize(release: ReleaseDetail, submitRequested: boolean, waited: boo
             for (const error of errors) {
                 log.info(`    - ${error}`);
             }
-            log.info(`  Complete the listing (publisher website, or PATCH /v1/publisher/extensions/${release.extension.slug}), then run: flb release submit ${release.id}`);
+            log.info(`  Complete it with \`flb listing update\` (see \`flb listing show\`), then run: flb release submit ${release.id}`);
         } else if (!isSettled(release)) {
             log.info(`  The submit is pending; follow it with: flb release status ${release.id} --watch`);
         } else {

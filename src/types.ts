@@ -53,6 +53,21 @@ export interface PublisherExtension {
     organization: { id: string; slug: string; name: string };
     packages: Package[];
     readiness?: { ready: boolean; missing: string[] };
+    subtitle?: string | null;
+    description?: string | null;
+    promotional_text?: string | null;
+    hosting?: string;
+    category?: { slug: string; name: string } | null;
+    tags?: string[];
+    languages?: string[];
+    website_url?: string | null;
+    repo_url?: string | null;
+    support_url?: string | null;
+    privacy_url?: string | null;
+    tos_url?: string | null;
+    copyright?: string | null;
+    fa_icon?: string | null;
+    price?: { model: string; amount: number; currency: string } | null;
 }
 
 export interface ReleaseCheck {

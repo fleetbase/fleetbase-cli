@@ -19,7 +19,10 @@ flb login                    # email and password; stores a scoped token
 flb init --name "Fleet Insights"
 cd fleet-insights && pnpm install
 flb build                    # engine and api archives in .fleetbase/build/<version>
-flb publish --submit         # upload, follow the registry checks, submit for review
+flb publish                  # creates the draft listing, uploads, follows the registry checks
+flb listing show             # what the listing still needs before the first submit
+flb listing update --subtitle "…" --category telematics --icon chart-line …
+flb release submit           # submit for review (or publish --submit next time)
 flb release status           # review state, reasons and history
 ```
 
@@ -42,9 +45,10 @@ price and permissions are published as soon as their checks pass.
 | `flb bump <version\|patch\|minor\|major\|prerelease>` | One version in extension.json, package.json and composer.json |
 | `flb publish [--channel beta] [--submit]` | Creates the draft listing if needed, uploads the release, streams the check results |
 | `flb release list\|status\|submit\|withdraw\|yank` | Release lifecycle, by `rel_` id or by version inside the extension |
+| `flb listing list\|show\|update\|categories` | The catalog listing: subtitle, description, category, tags, URLs, icon (`--file listing.json` for several at once); shows what is still needed before a first release can be submitted |
 | `flb search [query]` / `flb info <slug>` | The public catalog |
 | `flb instance code` | A one-time registration code to paste into an instance |
-| `flb instance register` | Exchanges a code for an instance token (kept in the config file) |
+| `flb instance register --path <fleetbase>\|--docker` | Registers the instance itself: mints a code and pipes it to `php artisan registry:register --code-stdin`, so the instance token stays in the instance's encrypted settings. Without a target (or with `--store-token`) the CLI exchanges the code and keeps the token in the config file |
 | `flb instance status\|updates\|list\|forget` | The instance as the service sees it, its licences and available updates |
 | `flb install <ext>[@version]` / `flb update` / `flb uninstall` | Runs `php artisan registry:install\|update\|uninstall` on an instance (`--path` or `--docker [service]`) and follows the job |
 | `flb doctor [--path\|--docker]` | Config, registry connectivity, token validity and scopes, instances, local tools, the instance's installer |
@@ -99,6 +103,18 @@ the api version must be one Composer can install), then writes to
 
 The prebuilt dist needs an ember-core with runtime engines
 ([fleetbase/ember-core#99](https://github.com/fleetbase/ember-core/pull/99)) in the console.
+
+## Registering an instance
+
+```bash
+flb instance register --path ~/fleetbase               # runs registry:register in api/
+flb instance register --docker --service-url https://registry.fleetbase.io
+```
+
+The code is minted with your login (`instance:register` scope) and written to the command's
+stdin, never its arguments. `--service-url` is the registry URL as the instance reaches it
+(default: the one the CLI uses). Instances registered this way show in `flb instance list`
+with the token hint only.
 
 ## Installing on an instance
 

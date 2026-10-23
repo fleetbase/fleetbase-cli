@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { setRunner, type Runner } from '../../src/artisan.js';
 import { detectVersions } from '../../src/commands/instance.js';
 import { INSTANCE_TOKEN, TOKEN, capture, fakeRegistry, flb, readConfigFile, reset, tempDir, useTempHome, writeConfig } from './helpers.js';
 
@@ -12,7 +13,10 @@ describe('instance', () => {
         configFile = useTempHome();
         writeConfig({ tokens: { 'registry.test:8000': TOKEN } });
     });
-    afterEach(reset);
+    afterEach(() => {
+        setRunner(null);
+        reset();
+    });
 
     it('register mints a code, exchanges it without a bearer, and keeps the instance token in the config only', async () => {
         const fleetbase = tempDir();
@@ -78,6 +82,75 @@ describe('instance', () => {
         const out = capture();
         expect(await flb('instance', 'code', '--organization', 'acme')).toBe(0);
         expect(out.stdout.trim()).toBe('ABCD-EFGH-JKLM-NPQR');
+    });
+
+    it('register --path hands the code to registry:register over stdin; the CLI keeps no token', async () => {
+        const fleetbase = tempDir();
+        fs.mkdirSync(path.join(fleetbase, 'api'));
+        fs.writeFileSync(path.join(fleetbase, 'api', 'artisan'), '<?php');
+        const calls: { argv: string[]; cwd: string; input?: string }[] = [];
+        const runner: Runner = async (argv, cwd, options) => {
+            calls.push({ argv, cwd, input: options?.input });
+            const summary = { id: 'inst_9', name: 'prod', host: 'https://fleet.acme.test', kind: 'self_hosted', status: 'active', organization: { id: 'org_1', slug: 'acme', name: 'Acme' }, service_url: 'http://registry.test:8000', token_hint: 'flbi_…w9x8', registered_at: 'now' };
+            return { code: 0, stdout: `Registered.\n${JSON.stringify(summary, null, 4)}\n`, stderr: '' };
+        };
+        setRunner(runner);
+        const { requests } = fakeRegistry({
+            'POST /v1/account/instance-codes': { status: 201, body: { code: 'ABCD-EFGH-JKLM-NPQR', organization: 'org_1', expires_at: '2026-10-22T12:00:00Z', expires_in: 900 } },
+        });
+        const out = capture();
+        expect(await flb('instance', 'register', '--path', fleetbase, '--host', 'https://fleet.acme.test')).toBe(0);
+
+        expect(requests.map((r) => r.path)).toEqual(['/v1/account/instance-codes']);
+        expect(calls).toHaveLength(1);
+        expect(calls[0].cwd).toBe(path.join(fleetbase, 'api'));
+        expect(calls[0].argv).toEqual(['php', 'artisan', 'registry:register', '--code-stdin', '--service-url=http://registry.test:8000', '--host=https://fleet.acme.test', '--json', '--no-interaction', '--no-ansi']);
+        expect(calls[0].argv.join(' ')).not.toContain('ABCD-EFGH');
+        expect(calls[0].input).toBe('ABCD-EFGH-JKLM-NPQR\n');
+        expect(out.stderr).toMatch(/Registered prod \(inst_9\) in acme/);
+        expect(out.stderr).toMatch(/keeps its token \(flbi_…w9x8\)/);
+
+        const entry = readConfigFile().instances.inst_9;
+        expect(entry.token).toBeUndefined();
+        expect(entry).toMatchObject({ tokenHint: 'flbi_…w9x8', target: { path: path.join(fleetbase, 'api') } });
+
+        const status = capture();
+        expect(await flb('instance', 'status')).toBe(1);
+        expect(status.stderr).toMatch(/keeps its token on the instance/);
+    });
+
+    it('register --docker uses the compose service and --service-url; a refused code and an old bridge are explained', async () => {
+        const fleetbase = tempDir();
+        fs.writeFileSync(path.join(fleetbase, 'docker-compose.yml'), 'services: {}');
+        const responses: Array<{ code: number; stdout: string; stderr: string }> = [
+            { code: 1, stdout: '{\n    "error": "Invalid or expired registration code."\n}\n', stderr: '' },
+            { code: 1, stdout: '', stderr: 'Command "registry:register" is not defined.' },
+        ];
+        const calls: string[][] = [];
+        setRunner(async (argv) => {
+            calls.push(argv);
+            return responses.shift()!;
+        });
+        fakeRegistry({});
+        let out = capture();
+        expect(await flb('instance', 'register', '--path', fleetbase, '--docker', '--code', 'abcd-efgh-jklm-npqr', '--service-url', 'http://registry:8000')).toBe(1);
+        expect(calls[0].slice(0, 8)).toEqual(['docker', 'compose', 'exec', '-T', 'application', 'php', 'artisan', 'registry:register']);
+        expect(calls[0]).toContain('--service-url=http://registry:8000');
+        expect(out.stderr).toMatch(/Registration refused: Invalid or expired registration code/);
+
+        out = capture();
+        expect(await flb('instance', 'register', '--path', fleetbase, '--docker', '--code', 'abcd-efgh-jklm-npqr')).toBe(1);
+        expect(out.stderr).toMatch(/no registry:register command/);
+        expect(out.stderr).toMatch(/--store-token/);
+    });
+
+    it('--show-token is refused when the instance keeps the token', async () => {
+        const fleetbase = tempDir();
+        fs.writeFileSync(path.join(fleetbase, 'artisan'), '<?php');
+        fakeRegistry({});
+        const out = capture();
+        expect(await flb('instance', 'register', '--path', fleetbase, '--code', 'X', '--show-token')).toBe(1);
+        expect(out.stderr).toMatch(/--store-token/);
     });
 
     it('detects versions from a Fleetbase checkout', () => {

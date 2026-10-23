@@ -78,20 +78,30 @@ export interface ProcessResult {
     stderr: string;
 }
 
-export type Runner = (argv: string[], cwd: string, onStderr?: (chunk: string) => void) => Promise<ProcessResult>;
+export interface RunOptions {
+    onStderr?: (chunk: string) => void;
+    /** written to the command's stdin, then stdin is closed (secrets go here, never in argv) */
+    input?: string;
+}
 
-export const spawnRunner: Runner = (argv, cwd, onStderr) =>
+export type Runner = (argv: string[], cwd: string, options?: RunOptions) => Promise<ProcessResult>;
+
+export const spawnRunner: Runner = (argv, cwd, options = {}) =>
     new Promise((resolve, reject) => {
-        const child = spawn(argv[0], argv.slice(1), { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' });
+        const child = spawn(argv[0], argv.slice(1), { cwd, stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], shell: process.platform === 'win32' });
         let stdout = '';
         let stderr = '';
-        child.stdout.on('data', (chunk) => (stdout += chunk));
-        child.stderr.on('data', (chunk) => {
+        child.stdout!.on('data', (chunk) => (stdout += chunk));
+        child.stderr!.on('data', (chunk) => {
             stderr += chunk;
-            onStderr?.(String(chunk));
+            options.onStderr?.(String(chunk));
         });
         child.on('error', (error) => reject((error as NodeJS.ErrnoException).code === 'ENOENT' ? new CliError(`${argv[0]} is not installed or not on PATH.`) : error));
         child.on('close', (code) => resolve({ code: code ?? 1, stdout, stderr }));
+        if (options.input !== undefined) {
+            child.stdin!.on('error', () => undefined);
+            child.stdin!.end(options.input);
+        }
     });
 
 /** The last JSON object in artisan output (warnings may precede it). */
@@ -118,23 +128,30 @@ export function parseJsonOutput(output: string): Record<string, any> | null {
 
 export const MISSING_COMMAND = /(Command "registry:[a-z]+" is not defined|There are no commands defined in the "registry" namespace)/;
 
+let activeRunner: Runner = spawnRunner;
+
+/** Tests swap the process runner for a scripted one. */
+export function setRunner(next: Runner | null): void {
+    activeRunner = next || spawnRunner;
+}
+
 export class Artisan {
     constructor(
         readonly target: Target,
-        private readonly runner: Runner = spawnRunner,
+        private readonly runner: Runner = activeRunner,
     ) {}
 
     describe(): string {
         return this.target.kind === 'path' ? this.target.cwd : `docker compose service ${this.target.service} (${this.target.cwd})`;
     }
 
-    run(args: string[], onStderr?: (chunk: string) => void): Promise<ProcessResult> {
-        return this.runner(artisanArgv(this.target, args), this.target.cwd, onStderr);
+    run(args: string[], options?: RunOptions): Promise<ProcessResult> {
+        return this.runner(artisanArgv(this.target, args), this.target.cwd, options);
     }
 
     /** Run a command that prints JSON with --json; null when the command does not exist. */
-    async json(args: string[], onStderr?: (chunk: string) => void): Promise<{ result: ProcessResult; data: Record<string, any> | null; missing: boolean }> {
-        const result = await this.run(args, onStderr);
+    async json(args: string[], options?: RunOptions): Promise<{ result: ProcessResult; data: Record<string, any> | null; missing: boolean }> {
+        const result = await this.run(args, options);
         const combined = `${result.stdout}\n${result.stderr}`;
         return { result, data: parseJsonOutput(result.stdout), missing: MISSING_COMMAND.test(combined) };
     }

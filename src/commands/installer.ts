@@ -1,5 +1,7 @@
 import type { Command } from 'commander';
-import { Artisan, FINISHED, type InstallerJob, type InstallerRequest, installerArgs, resolveTarget, type Runner, spawnRunner } from '../artisan.js';
+import { Artisan, FINISHED, type InstallerJob, type InstallerRequest, installerArgs, resolveTarget } from '../artisan.js';
+
+export { setRunner } from '../artisan.js';
 import { colors, log } from '../output.js';
 import { CliError, parseTimeout, sleep, splitVersion } from '../util.js';
 
@@ -10,12 +12,6 @@ import { CliError, parseTimeout, sleep, splitVersion } from '../util.js';
  * Following a queued job uses `php artisan registry:job <id> --json`. Bridges without that
  * command get the job id and a hint instead; `--sync` runs the job in the artisan process.
  */
-
-let runner: Runner = spawnRunner;
-
-export function setRunner(next: Runner | null): void {
-    runner = next || spawnRunner;
-}
 
 function addOptions(command: Command, versioned: boolean): Command {
     command
@@ -66,15 +62,17 @@ export async function runInstaller(action: InstallerRequest['action'], ref: stri
         throw new CliError(`Two versions given: ${ref} and --release ${opts.release}.`);
     }
     const version = opts.release || inlineVersion;
-    const artisan = new Artisan(resolveTarget(opts), runner);
+    const artisan = new Artisan(resolveTarget(opts));
     const label = `${extension}${version ? `@${version}` : ''}`;
     const timeoutMs = parseTimeout(opts.timeout);
 
     log.step(`${capitalize(action)} ${label} on ${artisan.describe()}`);
-    const { result, data, missing } = await artisan.json(installerArgs({ action, extension, version, company: opts.company, sync: opts.sync }), (chunk) => {
-        if (opts.sync && !opts.json) {
-            process.stderr.write(chunk);
-        }
+    const { result, data, missing } = await artisan.json(installerArgs({ action, extension, version, company: opts.company, sync: opts.sync }), {
+        onStderr: (chunk) => {
+            if (opts.sync && !opts.json) {
+                process.stderr.write(chunk);
+            }
+        },
     });
 
     if (missing) {

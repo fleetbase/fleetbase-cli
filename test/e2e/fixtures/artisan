@@ -19,7 +19,7 @@ function out(array $value): void
 
 switch ($command) {
     case 'list':
-        echo json_encode(['commands' => array_map(fn ($name) => ['name' => $name], ['registry:init', 'registry:install', 'registry:uninstall', 'registry:update', 'registry:job'])]);
+        echo json_encode(['commands' => array_map(fn ($name) => ['name' => $name], ['registry:init', 'registry:install', 'registry:uninstall', 'registry:update', 'registry:job', 'registry:register'])]);
         exit(0);
 
     case 'registry:install':
@@ -27,6 +27,34 @@ switch ($command) {
     case 'registry:uninstall':
         file_put_contents($state, '0');
         out(['id' => 'job_e2e', 'action' => substr($command, 9), 'status' => 'queued', 'position' => 1, 'extension' => ['name' => $args[1] ?? '']]);
+        exit(0);
+
+    case 'registry:register':
+        // the real command: InstanceRegistration::payload, the service call, then ::store (encrypted settings)
+        $options = [];
+        foreach ($args as $arg) {
+            if (preg_match('/^--([a-z-]+)=(.*)$/', $arg, $m)) {
+                $options[$m[1]] = $m[2];
+            }
+        }
+        $code = in_array('--code-stdin', $args, true) ? trim((string) stream_get_contents(STDIN)) : ($options['code'] ?? '');
+        $payload = array_filter(['code' => strtoupper($code), 'name' => $options['name'] ?? 'Stub Instance', 'kind' => 'self_hosted', 'host' => $options['host'] ?? null, 'api_version' => '1.6.71']);
+        $response = @file_get_contents(rtrim($options['service-url'] ?? '', '/') . '/v1/instances/register', false, stream_context_create(['http' => [
+            'method' => 'POST', 'ignore_errors' => true, 'content' => json_encode($payload),
+            'header' => "Content-Type: application/json\r\nAccept: application/json\r\n",
+        ]]));
+        $body = json_decode((string) $response, true) ?: [];
+        if (empty($body['token'])) {
+            out(['error' => implode(' ', $body['errors'] ?? ['The Registry Service could not be reached.'])]);
+            exit(1);
+        }
+        file_put_contents("$dir/settings.json", json_encode(['instance_token' => $body['token']]));
+        $instance = $body['instance'];
+        out([
+            'id' => $instance['id'], 'name' => $instance['name'], 'host' => $instance['host'], 'kind' => $instance['kind'], 'status' => $instance['status'],
+            'organization' => ['id' => $instance['organization']['id'], 'slug' => $instance['organization']['slug'], 'name' => $instance['organization']['name']],
+            'service_url' => $options['service-url'], 'token_hint' => 'flbi_…' . substr($body['token'], -4), 'registered_at' => date(DATE_ATOM),
+        ]);
         exit(0);
 
     case 'registry:job':

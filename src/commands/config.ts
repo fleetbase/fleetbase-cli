@@ -20,7 +20,7 @@ export function register(program: Command): void {
             const masked = {
                 ...current,
                 tokens: Object.fromEntries(Object.entries(current.tokens || {}).map(([host, token]) => [host, maskToken(token)])),
-                instances: Object.fromEntries(Object.entries(current.instances || {}).map(([id, entry]) => [id, { ...entry, token: maskToken(entry.token) }])),
+                instances: Object.fromEntries(Object.entries(current.instances || {}).map(([id, entry]) => [id, { ...entry, ...(entry.token ? { token: maskToken(entry.token) } : {}) }])),
             };
             log.line(JSON.stringify(masked, null, 2));
         });

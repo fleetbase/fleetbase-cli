@@ -8,7 +8,8 @@
 - `flb build` writes the engine tarball, the Composer api archive and, with `--prebuilt --console <path>`, the prebuilt engine dist from ember-core's `build-engine-release`; `flb bump` keeps the three manifests on one version.
 - `flb publish [--channel beta] [--submit]` creates the listing, uploads the release and streams the registry checks; `flb release status|submit|withdraw|yank|list` follow it through review.
 - `flb search`, `flb info`: the public catalog.
-- `flb instance code|register|status|updates`: instance registration from a server shell.
+- `flb listing list|show|update|categories`: complete the catalog listing from the terminal.
+- `flb instance code|register|status|updates`: instance registration from a server shell; `register --path|--docker` hands the code to the instance (`registry:register`) so its token never leaves it.
 - `flb install|update|uninstall` run registry-bridge's queued installer (`php artisan registry:*`) locally or in a docker compose service and follow the job.
 - `flb doctor` checks config, token, connectivity, instances and local tools.
 

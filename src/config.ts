@@ -50,8 +50,13 @@ export interface InstanceEntry {
     kind?: string;
     registry: string;
     organization?: { id?: string; slug?: string; name?: string };
-    token: string;
+    /** set when the CLI exchanged the code itself; absent when the instance holds its own token */
+    token?: string;
+    /** masked token the instance reported (flbi_…a1b2) */
+    tokenHint?: string;
     path?: string;
+    /** where the instance was registered from, when it holds its own token */
+    target?: { path: string; docker?: string; composeFile?: string };
     registeredAt: string;
 }
 
