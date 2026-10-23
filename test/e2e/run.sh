@@ -70,7 +70,7 @@ contains "$EMAIL"; contains "$USERNAME"
 
 step "tokens"
 run token create --name ci-token --scopes publish,read --expires 30d --show-token
-CI_TOKEN="$(grep -oE 'flbp_[A-Za-z0-9]{40}' "$OUT" | head -1)"
+CI_TOKEN="$(grep -m1 -oE 'flbp_[A-Za-z0-9]{40}' "$OUT")"
 [ -n "$CI_TOKEN" ] || fail "token create --show-token printed no token"
 run --expect 1 token create --name hidden
 contains "--show-token"
@@ -89,9 +89,12 @@ grep -q "\"name\": \"${USERNAME}/e2e-insights-api\"" composer.json || fail "comp
 grep -q '"console": ">=0.7.0 <0.8.0"' extension.json || fail "compat.console"
 run build
 [ -f .fleetbase/release.json ] || fail "no release.json"
-tar tzf .fleetbase/build/0.1.0/api-0.1.0.tar.gz | grep -q '^package/composer.json$' || fail "api archive layout"
-tar tzf .fleetbase/build/0.1.0/engine-0.1.0.tgz | grep -q '^package/package.json$' || fail "engine tarball layout"
-if tar tzf .fleetbase/build/0.1.0/engine-0.1.0.tgz | grep -q '\.fleetbase/'; then fail "build output packed into the engine"; fi
+# list to files first: under pipefail, grep -q closing the pipe early makes GNU tar fail
+tar tzf .fleetbase/build/0.1.0/api-0.1.0.tar.gz > "$WORK/api.list"
+tar tzf .fleetbase/build/0.1.0/engine-0.1.0.tgz > "$WORK/engine.list"
+grep -q '^package/composer.json$' "$WORK/api.list" || fail "api archive layout"
+grep -q '^package/package.json$' "$WORK/engine.list" || fail "engine tarball layout"
+if grep -q '\.fleetbase/' "$WORK/engine.list"; then fail "build output packed into the engine"; fi
 
 step "publish streams the checks; --submit reports an incomplete listing"
 run --expect 1 publish --submit --notes "First release"
@@ -99,7 +102,7 @@ contains "✓ manifest"; contains "✓ secrets scan"; contains "Not submitted; t
 no_tokens publish
 SLUG="$(grep -oE 'Created the draft listing [a-z0-9-]+' "$OUT" | awk '{print $NF}')"
 [ -n "$SLUG" ] || fail "no listing slug in the publish output"
-REL1="$(grep -oE 'rel_[a-z0-9]+' "$OUT" | head -1)"
+REL1="$(grep -m1 -oE 'rel_[a-z0-9]+' "$OUT")"
 
 step "complete the listing with flb listing, then submit"
 run listing show
@@ -190,7 +193,7 @@ contains "Registered e2e-server"; contains "keeps its token"
 grep -q 'flbi_' "$INSTANCE/settings.json" || fail "the instance did not store its token"
 grep -q -- 'registry:register --code-stdin --service-url=' "$INSTANCE/calls.log" || fail "registry:register arguments"
 if grep -Eq '[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}' "$INSTANCE/calls.log"; then fail "the registration code was passed in argv"; fi
-SERVER_ID="$(grep -oE 'inst_[a-z0-9]+' "$OUT" | head -1)"
+SERVER_ID="$(grep -m1 -oE 'inst_[a-z0-9]+' "$OUT")"
 node -e 'const c=require(process.argv[1]); const e=c.instances[process.argv[2]]; if (!e || e.token) process.exit(1);' "$FLEETBASE_HOME/config.json" "$SERVER_ID" || fail "the CLI kept a token for an instance that holds its own"
 run --expect 1 instance status
 contains "keeps its token on the instance"
