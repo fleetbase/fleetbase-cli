@@ -1,0 +1,415 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import type { Command } from 'commander';
+import { INSTANCE_TOKEN, configDisplayPath, getToken, hostMeta, instancesFor, type InstanceEntry, maskToken, removeInstance, saveInstance, updateConfig } from '../config.js';
+import { Artisan, resolveTarget, type Target } from '../artisan.js';
+import { type Context, context, registryFlag } from '../context.js';
+import { ApiError } from '../http.js';
+import { colors, formatDate, log, table } from '../output.js';
+import { ask } from '../prompt.js';
+import type { Instance } from '../types.js';
+import { CliError } from '../util.js';
+
+/**
+ * `flb instance`: registration codes and instance tokens.
+ *
+ * `register` exchanges a one-time code (minted here when you are logged in with the
+ * `instance:register` scope, or pasted from the publisher website) for an instance token at
+ * `POST /v1/instances/register`. The token is written to the config file and nowhere else.
+ */
+
+export function register(program: Command): void {
+    const instance = program.command('instance').description('Register Fleetbase instances with the Registry Service');
+
+    instance
+        .command('code')
+        .description('Mint a one-time registration code (valid 15 minutes) to paste into an instance')
+        .option('-o, --organization <slug>', 'organization the instance will belong to')
+        .option('--json', 'print JSON')
+        .action((opts, command: Command) => mintCode(context(command), opts));
+
+    instance
+        .command('register')
+        .description('Register an instance: on the instance itself with --path/--docker, else keep its token in the config')
+        .option('--code <code>', 'registration code (default: mint one with your login)')
+        .option('-o, --organization <slug>', 'organization, when minting the code')
+        .option('-p, --path <path>', 'Fleetbase checkout or API directory to register (runs php artisan registry:register there)')
+        .option('-d, --docker [service]', 'register the instance inside this docker compose service (default service: application)')
+        .option('-f, --compose-file <file>', 'docker compose file (default: the one in --path)')
+        .option('--service-url <url>', 'Registry Service URL as the instance reaches it (default: the registry this CLI uses)')
+        .option('--store-token', 'exchange the code here and keep the instance token in the config, even with --path')
+        .option('-n, --name <name>', 'instance name (default: the instance app name, or this hostname with --store-token)')
+        .option('--host <url>', 'the instance URL (its app.url)')
+        .option('--kind <kind>', 'self_hosted or cloud (with --store-token; an instance reports its own)', 'self_hosted')
+        .option('--console-version <version>', 'console version (default: read from --path)')
+        .option('--api-version <version>', 'core-api version, with --store-token (default: read from --path)')
+        .option('--show-token', 'print the instance token, with --store-token (hidden by default)')
+        .option('--json', 'print JSON')
+        .action((opts, command: Command) => registerInstance(context(command), opts));
+
+    instance
+        .command('status')
+        .description('Show a registered instance as the service sees it, with its licences')
+        .argument('[id]', 'instance id (default: the last one registered for this registry)')
+        .option('--json', 'print JSON')
+        .action((id: string | undefined, _opts, command: Command) => instanceStatus(context(command), id));
+
+    instance
+        .command('updates')
+        .description('Extensions on the instance with a newer compatible release')
+        .argument('[id]', 'instance id')
+        .option('-c, --channel <channel>', 'include beta releases with beta')
+        .option('--json', 'print JSON')
+        .action((id: string | undefined, opts, command: Command) => instanceUpdates(context(command), id, opts));
+
+    instance
+        .command('list')
+        .alias('ls')
+        .description('Instances registered from this machine')
+        .action((_opts, command: Command) => listInstances(context(command)));
+
+    instance
+        .command('forget')
+        .description('Remove an instance token from the config (an organization admin revokes it on the service)')
+        .argument('<id>', 'instance id')
+        .action((id: string, _opts, command: Command) => {
+            const ctx = context(command);
+            if (!ctx.config.instances?.[id]) {
+                throw new CliError(`No instance ${id} in ${configDisplayPath()}.`);
+            }
+            updateConfig((config) => removeInstance(config, id));
+            log.success(`Removed ${id} from ${configDisplayPath()}.`);
+        });
+}
+
+interface CodeResponse {
+    code: string;
+    organization: string;
+    expires_at: string;
+    expires_in: number;
+}
+
+async function requestCode(ctx: Context, organization?: string): Promise<CodeResponse> {
+    try {
+        return await ctx.authed().post<CodeResponse>('v1/account/instance-codes', organization ? { organization } : {});
+    } catch (error) {
+        if (error instanceof ApiError && error.status === 403 && /scope/i.test(error.message)) {
+            throw new CliError(`Your token lacks the instance:register scope.`, 1, [`Log in again (\`flb login${registryFlag(ctx.registry)}\` asks for it by default), or create a token with --scopes instance:register.`]);
+        }
+        throw error;
+    }
+}
+
+async function mintCode(ctx: Context, opts: { organization?: string }): Promise<void> {
+    const code = await requestCode(ctx, ctx.organization(opts.organization));
+    if (ctx.json) {
+        log.line(JSON.stringify(code, null, 2));
+        return;
+    }
+    log.line(code.code);
+    log.info(`Single use, valid until ${new Date(code.expires_at).toLocaleTimeString()} (${Math.round(code.expires_in / 60)} minutes), for ${code.organization}.`);
+    log.info('Paste it on the instance: Extensions > Registry settings, or `flb instance register --code <code>`.');
+}
+
+/** core-api version from api/composer.lock and console version from console/package.json. */
+export function detectVersions(dir: string): { console?: string; api?: string } {
+    const root = path.resolve(dir);
+    const result: { console?: string; api?: string } = {};
+    for (const lock of [path.join(root, 'api', 'composer.lock'), path.join(root, 'composer.lock')]) {
+        if (fs.existsSync(lock)) {
+            try {
+                const packages = JSON.parse(fs.readFileSync(lock, 'utf8')).packages || [];
+                const core = packages.find((pkg: { name: string }) => pkg.name === 'fleetbase/core-api');
+                if (core?.version) {
+                    result.api = String(core.version).replace(/^v/, '');
+                    break;
+                }
+            } catch {
+                // unreadable lock file: leave the version out
+            }
+        }
+    }
+    for (const pkg of [path.join(root, 'console', 'package.json'), path.join(root, 'package.json')]) {
+        if (fs.existsSync(pkg)) {
+            try {
+                const json = JSON.parse(fs.readFileSync(pkg, 'utf8'));
+                if (json.name === '@fleetbase/console' && json.version) {
+                    result.console = json.version;
+                    break;
+                }
+            } catch {
+                // ignore
+            }
+        }
+    }
+    return result;
+}
+
+interface RegisterOptions {
+    code?: string;
+    organization?: string;
+    path?: string;
+    docker?: string | boolean;
+    composeFile?: string;
+    serviceUrl?: string;
+    storeToken?: boolean;
+    name?: string;
+    host?: string;
+    kind: string;
+    consoleVersion?: string;
+    apiVersion?: string;
+    showToken?: boolean;
+}
+
+/** Hand the registration to the instance when there is one to hand it to. */
+function instanceTarget(opts: RegisterOptions): Target | null {
+    if (opts.storeToken) {
+        return null;
+    }
+    if (opts.docker) {
+        return resolveTarget(opts);
+    }
+    if (opts.path) {
+        try {
+            return resolveTarget({ path: opts.path });
+        } catch {
+            return null;
+        }
+    }
+    return null;
+}
+
+async function obtainCode(ctx: Context, opts: RegisterOptions): Promise<string> {
+    if (opts.code) {
+        return opts.code.trim().toUpperCase();
+    }
+    if (getToken(ctx.config, ctx.registry)) {
+        const minted = await requestCode(ctx, ctx.organization(opts.organization));
+        log.step(`Minted a registration code for ${minted.organization}`);
+        return minted.code;
+    }
+    return (await ask('Registration code (XXXX-XXXX-XXXX-XXXX)', '--code')).trim().toUpperCase();
+}
+
+async function registerInstance(ctx: Context, opts: RegisterOptions): Promise<void> {
+    if (!['self_hosted', 'cloud'].includes(opts.kind)) {
+        throw new CliError('--kind must be self_hosted or cloud.');
+    }
+    const target = instanceTarget(opts);
+    if (target && opts.showToken) {
+        throw new CliError('The instance keeps its own token, so there is none to show; pass --store-token to keep it in the config instead.');
+    }
+    const code = await obtainCode(ctx, opts);
+    return target ? registerOnInstance(ctx, opts, target, code) : registerHere(ctx, opts, code);
+}
+
+/** `php artisan registry:register` on the instance; the code goes over stdin and the token never leaves it. */
+async function registerOnInstance(ctx: Context, opts: RegisterOptions, target: Target, code: string): Promise<void> {
+    const artisan = new Artisan(target);
+    const args = [
+        'registry:register',
+        '--code-stdin',
+        `--service-url=${opts.serviceUrl || ctx.registry}`,
+        ...(opts.name ? [`--name=${opts.name}`] : []),
+        ...(opts.host ? [`--host=${opts.host}`] : []),
+        ...(opts.consoleVersion ? [`--console-version=${opts.consoleVersion}`] : []),
+        '--json',
+    ];
+    log.step(`Registering ${artisan.describe()}`);
+    const { result, data, missing } = await artisan.json(args, { input: code + '\n' });
+    if (missing) {
+        throw new CliError("This instance's registry-bridge has no registry:register command.", 1, ['Update fleetbase/registry-bridge, or rerun with --store-token to keep the instance token in the config.']);
+    }
+    if (!data) {
+        throw new CliError(`php artisan registry:register failed (exit ${result.code}):\n${(result.stderr || result.stdout).trim().split('\n').slice(-20).join('\n')}`);
+    }
+    if (data.error) {
+        throw new CliError(`Registration refused: ${data.error}`, 1, ['Codes are single use and expire after 15 minutes; mint a new one with `flb instance code`.']);
+    }
+
+    const summary = data as { id: string; name?: string; kind?: string; status?: string; organization?: { id?: string; slug?: string; name?: string }; service_url?: string; token_hint?: string; rotated?: boolean };
+    const entry: InstanceEntry = {
+        id: summary.id,
+        name: summary.name,
+        kind: summary.kind,
+        registry: ctx.registry,
+        organization: summary.organization,
+        tokenHint: summary.token_hint,
+        target: { path: target.cwd, ...(target.kind === 'docker' ? { docker: target.service, ...(target.composeFile ? { composeFile: target.composeFile } : {}) } : {}) },
+        registeredAt: new Date().toISOString(),
+    };
+    updateConfig((config) => saveInstance(config, entry));
+
+    if (ctx.json) {
+        log.json(summary);
+        return;
+    }
+    log.success(`${summary.rotated ? 'Re-registered' : 'Registered'} ${summary.name || summary.id} (${summary.id})${summary.organization?.slug ? ` in ${summary.organization.slug}` : ''}.`);
+    if (summary.rotated) {
+        log.info(ROTATED_NOTE);
+    }
+    log.info(`  the instance keeps its token (${summary.token_hint || 'flbi_…'}) in its encrypted settings; nothing secret was written here`);
+}
+
+const ROTATED_NOTE = '  same instance on the service: its installs and licence seats are kept, and the previous token no longer works';
+
+/**
+ * The instance this machine already registered for the same --path or --host on this registry, whose token is sent as
+ * `previous_token` so the service rotates that instance instead of creating a second one.
+ */
+function previousEntry(ctx: Context, opts: RegisterOptions): (InstanceEntry & { token: string }) | null {
+    const wantedPath = opts.path ? path.resolve(opts.path) : null;
+    const found = instancesFor(ctx.config, ctx.registry)
+        .reverse()
+        .find((entry) => entry.token && ((wantedPath && entry.path === wantedPath) || (opts.host && entry.host === opts.host)));
+    return found && found.token ? (found as InstanceEntry & { token: string }) : null;
+}
+
+/** Exchange the code from this machine and keep the instance token in the config. */
+async function registerHere(ctx: Context, opts: RegisterOptions, code: string): Promise<void> {
+    const detected = opts.path ? detectVersions(opts.path) : {};
+    const previous = previousEntry(ctx, opts);
+    const body = {
+        code,
+        name: opts.name || os.hostname(),
+        kind: opts.kind,
+        ...(opts.host ? { host: opts.host } : {}),
+        ...((opts.consoleVersion || detected.console) ? { console_version: opts.consoleVersion || detected.console } : {}),
+        ...((opts.apiVersion || detected.api) ? { api_version: opts.apiVersion || detected.api } : {}),
+        ...(previous ? { previous_token: previous.token } : {}),
+    };
+
+    let result: { token: string; rotated?: boolean; instance: Instance };
+    try {
+        result = await ctx.anonymous().post('v1/instances/register', body, { auth: false });
+    } catch (error) {
+        if (error instanceof ApiError && [404, 410, 422].includes(error.status)) {
+            throw new CliError(`Registration refused: ${error.message}`, 1, ['Codes are single use and expire after 15 minutes; mint a new one with `flb instance code`.']);
+        }
+        throw error;
+    }
+    if (!INSTANCE_TOKEN.test(result.token)) {
+        throw new CliError('The service returned no instance token.');
+    }
+
+    const entry: InstanceEntry = {
+        id: result.instance.id,
+        name: result.instance.name,
+        kind: result.instance.kind,
+        registry: ctx.registry,
+        organization: { id: result.instance.organization.id, slug: result.instance.organization.slug, name: result.instance.organization.name },
+        token: result.token,
+        ...(opts.host ? { host: opts.host } : {}),
+        ...(opts.path ? { path: path.resolve(opts.path) } : {}),
+        registeredAt: new Date().toISOString(),
+    };
+    updateConfig((config) => saveInstance(config, entry));
+
+    if (ctx.json) {
+        const out = { instance: result.instance, ...(opts.showToken ? { token: result.token } : {}) };
+        (opts.showToken ? log.secret : log.line)(JSON.stringify(out, null, 2));
+        return;
+    }
+    log.success(`${result.rotated ? 'Re-registered' : 'Registered'} ${result.instance.name} (${result.instance.id}) in ${result.instance.organization.slug} as ${result.instance.kind}.`);
+    if (result.rotated) {
+        log.info(ROTATED_NOTE);
+    }
+    log.info(`  instance token ${maskToken(result.token)} saved to ${configDisplayPath()}`);
+    if (!opts.storeToken) {
+        log.info('  To register a Fleetbase instance itself, pass --path <checkout> or --docker; this token is only for `flb instance status` and `updates`.');
+    }
+    if (opts.showToken) {
+        log.secret(result.token);
+    }
+}
+
+function pickInstance(ctx: Context, id?: string): InstanceEntry & { token: string } {
+    const entries = instancesFor(ctx.config, ctx.registry);
+    const wanted = id || hostMeta(ctx.config, ctx.registry).instance;
+    const entry = wanted ? ctx.config.instances?.[wanted] : entries[entries.length - 1];
+    if (!entry) {
+        throw new CliError(id ? `No instance ${id} in ${configDisplayPath()}.` : `No instance registered for ${ctx.host} from this machine.`, 1, ['Register one with `flb instance register`.']);
+    }
+    if (!entry.token) {
+        throw new CliError(`${entry.id} keeps its token on the instance (${entry.target?.path || 'registered with --path or --docker'}), so this machine cannot query the service as it.`, 1, [
+            'See it in the console (Extensions > Registry settings), or check the installer with `flb doctor --path`.',
+        ]);
+    }
+    return entry as InstanceEntry & { token: string };
+}
+
+async function instanceStatus(ctx: Context, id?: string): Promise<void> {
+    const entry = pickInstance(ctx, id);
+    let me: { instance: Instance; licences: Array<Record<string, any>> };
+    try {
+        me = await ctx.anonymous().get('v1/instances/me', { token: entry.token });
+    } catch (error) {
+        if (error instanceof ApiError && error.status === 401) {
+            throw new CliError(`The service no longer accepts the token of ${entry.id} (revoked?).`, 1, [`Register again, then \`flb instance forget ${entry.id}\`.`]);
+        }
+        throw error;
+    }
+    if (ctx.json) {
+        log.json(me);
+        return;
+    }
+    const { instance } = me;
+    log.line(`${colors.bold(instance.name)} ${colors.dim(instance.id)}  ${instance.kind}  ${instance.status === 'active' ? colors.green(instance.status) : colors.red(instance.status)}`);
+    log.line(`  organization ${instance.organization.name} (${instance.organization.slug})`);
+    log.line(`  versions     console ${instance.console_version || 'unknown'}, api ${instance.api_version || 'unknown'}`);
+    log.line(`  last seen    ${formatDate(instance.last_seen_at)}`);
+    if (me.licences.length) {
+        log.line('');
+        log.line(
+            table(me.licences, [
+                { header: 'EXTENSION', value: (l) => l.extension?.slug || l.extension?.name || '' },
+                { header: 'KIND', value: (l) => l.kind },
+                { header: 'STATUS', value: (l) => l.status },
+                { header: 'SEATS', value: (l) => `${l.seats_used ?? '?'}/${l.max_activations ?? '∞'}` },
+                { header: 'HERE', value: (l) => (l.activated_here ? 'yes' : '') },
+            ]),
+        );
+    }
+}
+
+async function instanceUpdates(ctx: Context, id: string | undefined, opts: { channel?: string }): Promise<void> {
+    const entry = pickInstance(ctx, id);
+    const response = await ctx.anonymous().get<{ data?: Array<Record<string, any>> } | Array<Record<string, any>>>('v1/instances/me/updates', { token: entry.token, query: { channel: opts.channel } });
+    const rows = Array.isArray(response) ? response : response.data || [];
+    if (ctx.json) {
+        log.json(rows);
+        return;
+    }
+    if (rows.length === 0) {
+        log.info('No extensions installed on this instance.');
+        return;
+    }
+    log.line(
+        table(rows, [
+            { header: 'EXTENSION', value: (r) => r.extension?.slug || '' },
+            { header: 'INSTALLED', value: (r) => r.installed?.version || r.installed_release?.version || '' },
+            { header: 'LATEST', value: (r) => r.latest?.version || r.latest_compatible?.version || '' },
+            { header: 'UPDATE', value: (r) => (r.update_available ? colors.green('yes') : '') },
+        ]),
+    );
+}
+
+function listInstances(ctx: Context): void {
+    const entries = instancesFor(ctx.config, ctx.registry);
+    if (entries.length === 0) {
+        log.info(`No instances registered for ${ctx.host} from this machine.`);
+        return;
+    }
+    const current = hostMeta(ctx.config, ctx.registry).instance;
+    log.line(
+        table(entries, [
+            { header: 'ID', value: (e) => (e.id === current ? `${e.id} ${colors.green('*')}` : e.id) },
+            { header: 'NAME', value: (e) => e.name || '' },
+            { header: 'ORG', value: (e) => e.organization?.slug || '' },
+            { header: 'KIND', value: (e) => e.kind || '' },
+            { header: 'TOKEN', value: (e) => (e.token ? maskToken(e.token) : `${e.tokenHint || 'flbi_…'} on the instance`) },
+            { header: 'REGISTERED', value: (e) => formatDate(e.registeredAt) },
+        ]),
+    );
+}

@@ -1,0 +1,36 @@
+{
+    "name": "@fleetbase/installer",
+    "version": "0.1.0",
+    "description": "Install Fleetbase with Docker through an interactive setup wizard",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/fleetbase/fleetbase-cli",
+        "directory": "packages/installer"
+    },
+    "license": "AGPL-3.0-or-later",
+    "author": "Fleetbase Pte Ltd <hello@fleetbase.io>",
+    "keywords": [
+        "fleetbase",
+        "installer",
+        "docker"
+    ],
+    "main": "index.js",
+    "bin": {
+        "fleetbase-installer": "index.js"
+    },
+    "files": [
+        "index.js",
+        "README.md"
+    ],
+    "engines": {
+        "node": ">=18"
+    },
+    "scripts": {
+        "test": "node --test"
+    },
+    "dependencies": {
+        "commander": "^12.1.0",
+        "enquirer": "^2.4.1",
+        "fs-extra": "^11.2.0"
+    }
+}

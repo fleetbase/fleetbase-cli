@@ -1,0 +1,6 @@
+{
+    "name": "@acme/insights-engine",
+    "version": "1.2.0",
+    "description": "Fixture engine",
+    "keywords": ["ember-engine"]
+}
