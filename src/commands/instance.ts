@@ -228,7 +228,7 @@ async function registerOnInstance(ctx: Context, opts: RegisterOptions, target: T
         throw new CliError(`Registration refused: ${data.error}`, 1, ['Codes are single use and expire after 15 minutes; mint a new one with `flb instance code`.']);
     }
 
-    const summary = data as { id: string; name?: string; kind?: string; status?: string; organization?: { id?: string; slug?: string; name?: string }; service_url?: string; token_hint?: string };
+    const summary = data as { id: string; name?: string; kind?: string; status?: string; organization?: { id?: string; slug?: string; name?: string }; service_url?: string; token_hint?: string; rotated?: boolean };
     const entry: InstanceEntry = {
         id: summary.id,
         name: summary.name,
@@ -245,13 +245,31 @@ async function registerOnInstance(ctx: Context, opts: RegisterOptions, target: T
         log.json(summary);
         return;
     }
-    log.success(`Registered ${summary.name || summary.id} (${summary.id})${summary.organization?.slug ? ` in ${summary.organization.slug}` : ''}.`);
+    log.success(`${summary.rotated ? 'Re-registered' : 'Registered'} ${summary.name || summary.id} (${summary.id})${summary.organization?.slug ? ` in ${summary.organization.slug}` : ''}.`);
+    if (summary.rotated) {
+        log.info(ROTATED_NOTE);
+    }
     log.info(`  the instance keeps its token (${summary.token_hint || 'flbi_…'}) in its encrypted settings; nothing secret was written here`);
+}
+
+const ROTATED_NOTE = '  same instance on the service: its installs and licence seats are kept, and the previous token no longer works';
+
+/**
+ * The instance this machine already registered for the same --path or --host on this registry, whose token is sent as
+ * `previous_token` so the service rotates that instance instead of creating a second one.
+ */
+function previousEntry(ctx: Context, opts: RegisterOptions): (InstanceEntry & { token: string }) | null {
+    const wantedPath = opts.path ? path.resolve(opts.path) : null;
+    const found = instancesFor(ctx.config, ctx.registry)
+        .reverse()
+        .find((entry) => entry.token && ((wantedPath && entry.path === wantedPath) || (opts.host && entry.host === opts.host)));
+    return found && found.token ? (found as InstanceEntry & { token: string }) : null;
 }
 
 /** Exchange the code from this machine and keep the instance token in the config. */
 async function registerHere(ctx: Context, opts: RegisterOptions, code: string): Promise<void> {
     const detected = opts.path ? detectVersions(opts.path) : {};
+    const previous = previousEntry(ctx, opts);
     const body = {
         code,
         name: opts.name || os.hostname(),
@@ -259,9 +277,10 @@ async function registerHere(ctx: Context, opts: RegisterOptions, code: string): 
         ...(opts.host ? { host: opts.host } : {}),
         ...((opts.consoleVersion || detected.console) ? { console_version: opts.consoleVersion || detected.console } : {}),
         ...((opts.apiVersion || detected.api) ? { api_version: opts.apiVersion || detected.api } : {}),
+        ...(previous ? { previous_token: previous.token } : {}),
     };
 
-    let result: { token: string; instance: Instance };
+    let result: { token: string; rotated?: boolean; instance: Instance };
     try {
         result = await ctx.anonymous().post('v1/instances/register', body, { auth: false });
     } catch (error) {
@@ -281,6 +300,7 @@ async function registerHere(ctx: Context, opts: RegisterOptions, code: string): 
         registry: ctx.registry,
         organization: { id: result.instance.organization.id, slug: result.instance.organization.slug, name: result.instance.organization.name },
         token: result.token,
+        ...(opts.host ? { host: opts.host } : {}),
         ...(opts.path ? { path: path.resolve(opts.path) } : {}),
         registeredAt: new Date().toISOString(),
     };
@@ -291,7 +311,10 @@ async function registerHere(ctx: Context, opts: RegisterOptions, code: string): 
         (opts.showToken ? log.secret : log.line)(JSON.stringify(out, null, 2));
         return;
     }
-    log.success(`Registered ${result.instance.name} (${result.instance.id}) in ${result.instance.organization.slug} as ${result.instance.kind}.`);
+    log.success(`${result.rotated ? 'Re-registered' : 'Registered'} ${result.instance.name} (${result.instance.id}) in ${result.instance.organization.slug} as ${result.instance.kind}.`);
+    if (result.rotated) {
+        log.info(ROTATED_NOTE);
+    }
     log.info(`  instance token ${maskToken(result.token)} saved to ${configDisplayPath()}`);
     if (!opts.storeToken) {
         log.info('  To register a Fleetbase instance itself, pass --path <checkout> or --docker; this token is only for `flb instance status` and `updates`.');

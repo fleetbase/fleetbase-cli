@@ -119,6 +119,52 @@ describe('instance', () => {
         expect(status.stderr).toMatch(/keeps its token on the instance/);
     });
 
+    it('register --store-token again sends the stored token for the same --host and reports the rotated instance', async () => {
+        const previousToken = 'flbi_' + 'p'.repeat(40);
+        writeConfig({
+            tokens: { 'registry.test:8000': TOKEN },
+            instances: {
+                inst_1: { id: 'inst_1', registry: 'http://registry.test:8000', token: previousToken, host: 'https://fleet.acme.test', registeredAt: 'x' },
+                inst_2: { id: 'inst_2', registry: 'http://registry.test:8000', token: 'flbi_' + 'q'.repeat(40), host: 'https://eu.acme.test', registeredAt: 'x' },
+            },
+        });
+        const { requests } = fakeRegistry({ 'POST /v1/instances/register': { status: 200, body: { token: INSTANCE_TOKEN, token_type: 'Bearer', rotated: true, instance } } });
+        const out = capture();
+        expect(await flb('instance', 'register', '--code', 'abcd-efgh-jklm-npqr', '--host', 'https://fleet.acme.test')).toBe(0);
+
+        expect(requests[0].body.previous_token).toBe(previousToken);
+        expect(out.stderr).toMatch(/Re-registered prod \(inst_1\) in acme/);
+        expect(out.stderr).toMatch(/installs and licence seats are kept/);
+        expect(out.all).not.toContain(previousToken);
+        expect(readConfigFile().instances.inst_1).toMatchObject({ token: INSTANCE_TOKEN, host: 'https://fleet.acme.test' });
+    });
+
+    it('register --store-token for a new host sends no previous token', async () => {
+        writeConfig({ instances: { inst_1: { id: 'inst_1', registry: 'http://registry.test:8000', token: 'flbi_' + 'p'.repeat(40), host: 'https://fleet.acme.test', registeredAt: 'x' } } });
+        const { requests } = fakeRegistry({ 'POST /v1/instances/register': { status: 201, body: { token: INSTANCE_TOKEN, token_type: 'Bearer', rotated: false, instance: { ...instance, id: 'inst_3' } } } });
+        const out = capture();
+        expect(await flb('instance', 'register', '--code', 'abcd-efgh-jklm-npqr', '--host', 'https://new.acme.test')).toBe(0);
+
+        expect(requests[0].body).not.toHaveProperty('previous_token');
+        expect(out.stderr).toMatch(/Registered prod \(inst_3\)/);
+        expect(out.stderr).not.toMatch(/Re-registered/);
+    });
+
+    it('register --path reports a rotated instance from registry:register', async () => {
+        const fleetbase = tempDir();
+        fs.mkdirSync(path.join(fleetbase, 'api'));
+        fs.writeFileSync(path.join(fleetbase, 'api', 'artisan'), '<?php');
+        setRunner(async () => {
+            const summary = { id: 'inst_9', name: 'prod', kind: 'self_hosted', status: 'active', organization: { id: 'org_1', slug: 'acme', name: 'Acme' }, service_url: 'http://registry.test:8000', token_hint: 'flbi_…w9x8', registered_at: 'now', rotated: true };
+            return { code: 0, stdout: JSON.stringify(summary, null, 4) + '\n', stderr: '' };
+        });
+        const out = capture();
+        expect(await flb('instance', 'register', '--path', fleetbase, '--code', 'abcd-efgh-jklm-npqr')).toBe(0);
+
+        expect(out.stderr).toMatch(/Re-registered prod \(inst_9\) in acme/);
+        expect(out.stderr).toMatch(/previous token no longer works/);
+    });
+
     it('register --docker uses the compose service and --service-url; a refused code and an old bridge are explained', async () => {
         const fleetbase = tempDir();
         fs.writeFileSync(path.join(fleetbase, 'docker-compose.yml'), 'services: {}');

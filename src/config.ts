@@ -54,6 +54,8 @@ export interface InstanceEntry {
     token?: string;
     /** masked token the instance reported (flbi_…a1b2) */
     tokenHint?: string;
+    /** the instance URL it was registered with (`--host`) */
+    host?: string;
     path?: string;
     /** where the instance was registered from, when it holds its own token */
     target?: { path: string; docker?: string; composeFile?: string };
