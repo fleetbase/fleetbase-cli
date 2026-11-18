@@ -29,6 +29,11 @@ export function setFetch(impl: FetchLike | undefined): void {
     fetchOverride = impl;
 }
 
+/** The fetch requests go through: the test override, else the global one. */
+export function currentFetch(): FetchLike {
+    return fetchOverride || globalThis.fetch;
+}
+
 export function context(command: Command): Context {
     const opts = command.optsWithGlobals();
     const config = readConfig();
@@ -55,7 +60,7 @@ export function requireToken(config: Config, registry: string): string {
     }
     if (stored.legacy) {
         const where = stored.source === 'env' ? 'FLB_TOKEN' : `the token stored for ${host} in ${configDisplayPath()}`;
-        throw new CliError(`${where} is not a Registry Service token (they start with flbp_).`, 1, [
+        throw new CliError(`${where} is not a Registry Service token (they start with flbp_, or flbt_ for trusted publishing).`, 1, [
             `It is probably a v1 registry token. Run \`flb login${registryFlag(registry)}\` to replace it.`,
         ]);
     }

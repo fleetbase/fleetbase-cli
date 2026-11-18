@@ -43,7 +43,7 @@ price and permissions are published as soon as their checks pass.
 | `flb init [dir]` | Scaffolds from [fleetbase/starter-extension](https://github.com/fleetbase/starter-extension): package names under your organization, PHP namespace, engine route, and an `extension.json` with `compat` ranges |
 | `flb build [--prebuilt --console <path>]` | Engine tarball (`npm pack`), api archive (Composer layout), optional prebuilt engine dist, and `.fleetbase/release.json` |
 | `flb bump <version\|patch\|minor\|major\|prerelease>` | One version in extension.json, package.json and composer.json |
-| `flb publish [--channel beta] [--submit]` | Creates the draft listing if needed, uploads the release, streams the check results |
+| `flb publish [--channel beta] [--submit]` | Creates the draft listing if needed, uploads the release, streams the check results. In GitHub Actions it can use trusted publishing (`--oidc`, see below) |
 | `flb release list\|status\|submit\|withdraw\|yank` | Release lifecycle, by `rel_` id or by version inside the extension |
 | `flb listing list\|show\|update\|categories` | The catalog listing: subtitle, description, category, tags, URLs, icon (`--file listing.json` for several at once); shows what is still needed before a first release can be submitted |
 | `flb search [query]` / `flb info <slug>` | The public catalog |
@@ -86,7 +86,50 @@ Service token: commands that need one ask you to `flb login` again.
 - No command prints a token unless you pass `--show-token`.
 - Tokens are never written anywhere but this file: no `.npmrc`, no `auth.json`, no
   `.fleetbase/` files in your extension.
-- In CI, set `FLB_TOKEN` instead of logging in; it is never written to disk.
+- In CI, set `FLB_TOKEN` instead of logging in; it is never written to disk. From GitHub
+  Actions, `flb publish` can use trusted publishing instead (next section).
+
+## Publishing from GitHub Actions
+
+With trusted publishing a workflow publishes releases without any stored secret: `flb
+publish` requests the job's GitHub OIDC token and exchanges it (`POST /v1/auth/oidc/github`)
+for a short-lived `flbt_` token that can publish releases of that one extension, when the
+token's claims match a trusted publisher configured on the listing.
+
+1. Publish the first release from your machine (`flb login`, `flb publish`) or create the
+   listing in Studio: trusted publishing does not create listings or add packages to them.
+2. In Studio → Access, add a trusted publisher to the listing: the repository (`owner/repo`),
+   the workflow file name (`release.yml`), optionally an environment (`release`), and the
+   refs it may publish from (`refs/tags/v*`).
+3. Add the workflow, with `permissions: id-token: write`:
+
+```yaml
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: fleetbase/fleetbase-cli/action@v2
+```
+
+The action ([action/README.md](action/README.md), example in
+[action/examples/publish-on-tag.yml](action/examples/publish-on-tag.yml)) installs the CLI,
+runs `flb publish --json --submit` and exposes the release id, version and status as outputs.
+
+Without the action, run `flb publish` in a job with `id-token: write`. It picks its token in
+this order: `FLB_TOKEN`; a trusted publishing exchange when the job can request an OIDC token
+(`ACTIONS_ID_TOKEN_REQUEST_URL` is set), or with `--oidc`; the stored login. `--no-oidc` skips
+the exchange. The OIDC token's audience is the registry's host name (`registry.fleetbase.io`);
+`FLB_OIDC_AUDIENCE` overrides it. Only `flb publish` does the exchange. Neither token is
+printed or written to disk, and the exchanged token is renewed if it is about to expire while
+the checks run.
 
 ## Building
 

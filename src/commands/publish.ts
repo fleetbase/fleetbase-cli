@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Command } from 'commander';
 import { readRelease, type ReleaseFile } from '../build.js';
-import { type Context, context } from '../context.js';
-import { ApiError } from '../http.js';
+import { type Context, context, currentFetch } from '../context.js';
+import { ApiError, type RegistryClient } from '../http.js';
 import { type LoadedExtension, loadExtension } from '../manifest.js';
+import { assertGithubOidcAvailable, githubOidcEnv, inGithubActions, PERMISSION_HINT, TrustedPublishing } from '../oidc.js';
 import { colors, formatBytes, log } from '../output.js';
 import { isSettled, listingFor, printCheck, reviewReasons, statusLabel, watchRelease } from '../releases.js';
 import type { PublisherExtension, ReleaseDetail } from '../types.js';
@@ -25,7 +26,9 @@ export function register(program: Command): void {
             .option('--no-build', 'fail instead of building when .fleetbase/release.json is missing or stale')
             .option('--rebuild', 'build again even when the last build is current')
             .option('--no-wait', 'return after the upload without following the checks')
-            .option('--timeout <duration>', 'how long to follow the checks', '15m'),
+            .option('--timeout <duration>', 'how long to follow the checks', '15m')
+            .option('--oidc', 'authenticate with a GitHub Actions OIDC token (trusted publishing); the default in a job with id-token: write unless FLB_TOKEN is set')
+            .option('--no-oidc', 'do not use trusted publishing, even in GitHub Actions'),
     )
         .option('--json', 'print the release as JSON')
         .action(async (dir: string, opts, command: Command) => {
@@ -43,12 +46,54 @@ interface PublishOptions {
     rebuild?: boolean;
     wait: boolean;
     timeout: string;
+    /** undefined: trusted publishing when GitHub Actions offers an OIDC token and FLB_TOKEN is not set */
+    oidc?: boolean;
     [key: string]: unknown;
 }
 
+interface PublishAuth {
+    client: RegistryClient;
+    /** set in trusted publishing mode: the token is exchanged after the build, refreshed as it nears expiry */
+    trusted?: TrustedPublishing;
+}
+
+/**
+ * The token for a publish: FLB_TOKEN, else a trusted publishing exchange when the job can
+ * request a GitHub OIDC token (or with --oidc), else the stored login. Only publish does the
+ * exchange; every other command stays on the stored token or FLB_TOKEN.
+ */
+export function publishAuth(ctx: Context, ext: LoadedExtension, oidc?: boolean): PublishAuth {
+    const envToken = process.env.FLB_TOKEN?.trim();
+    const github = githubOidcEnv();
+    const useOidc = oidc ?? (!envToken && Boolean(github.url || github.token));
+
+    if (!useOidc) {
+        try {
+            return { client: ctx.authed() };
+        } catch (error) {
+            if (error instanceof CliError && inGithubActions() && oidc === undefined && !envToken) {
+                throw new CliError(error.message, error.exitCode, [
+                    ...error.hints,
+                    `For trusted publishing instead of a token: ${PERMISSION_HINT.charAt(0).toLowerCase()}${PERMISSION_HINT.slice(1)}`,
+                ]);
+            }
+            throw error;
+        }
+    }
+
+    assertGithubOidcAvailable();
+    const extension = ext.engine?.name || ext.api?.name;
+    if (!extension) {
+        throw new CliError('Trusted publishing needs the extension\'s npm or composer package name.');
+    }
+    const trusted = new TrustedPublishing(ctx.registry, extension, currentFetch());
+    return { client: trusted.client(), trusted };
+}
+
 export async function publish(ctx: Context, dir: string, opts: PublishOptions): Promise<ReleaseDetail> {
-    const client = ctx.authed();
     const ext = loadExtension(dir);
+    const auth = publishAuth(ctx, ext, opts.oidc);
+    const client = auth.client;
     const channel = opts.channel || ext.manifest.channel || 'stable';
     if (!['stable', 'beta'].includes(channel)) {
         throw new CliError(`Unknown channel "${channel}": use stable or beta.`);
@@ -74,10 +119,18 @@ export async function publish(ctx: Context, dir: string, opts: PublishOptions): 
         release = await runBuild(ext, opts, ctx.json);
     }
 
-    // 2. the listing
-    const listing = await ensureListing(ctx, ext, opts.organization);
+    // 2. the token, for trusted publishing: exchanged after the build so its lifetime goes to the upload and checks
+    if (auth.trusted) {
+        await auth.trusted.token();
+        const exchanged = auth.trusted.exchanged!;
+        const publisher = exchanged.trusted_publisher;
+        log.step(`Trusted publishing to ${exchanged.extension?.slug || auth.trusted.extension}${publisher?.repository ? ` as ${publisher.repository}${publisher.workflow ? ` (${publisher.workflow})` : ''}` : ''}`);
+    }
 
-    // 3. the upload
+    // 3. the listing
+    const listing = await ensureListing(ctx, client, ext, opts.organization, Boolean(auth.trusted));
+
+    // 4. the upload
     const form = new FormData();
     form.append('manifest', await fs.openAsBlob(ext.manifestPath, { type: 'application/json' }), 'extension.json');
     for (const kind of ['engine', 'api', 'dist'] as const) {
@@ -107,7 +160,7 @@ export async function publish(ctx: Context, dir: string, opts: PublishOptions): 
     }
     log.success(`Uploaded ${uploaded.id}`);
 
-    // 4. the checks
+    // 5. the checks
     let final = uploaded;
     if (opts.wait) {
         if (!ctx.json) {
@@ -131,13 +184,25 @@ export async function publish(ctx: Context, dir: string, opts: PublishOptions): 
     return final;
 }
 
-async function ensureListing(ctx: Context, ext: LoadedExtension, organizationFlag?: string): Promise<PublisherExtension> {
-    const client = ctx.authed();
+async function ensureListing(ctx: Context, client: RegistryClient, ext: LoadedExtension, organizationFlag: string | undefined, trusted: boolean): Promise<PublisherExtension> {
     const packages = { npm: ext.engine?.name, composer: ext.api?.name };
     const existing = await listingFor(client, packages);
-    const missingKind = existing && ((packages.npm && !existing.packages.some((p) => p.kind === 'npm')) || (packages.composer && !existing.packages.some((p) => p.kind === 'composer')));
+    const missingKind = existing ? (['npm', 'composer'] as const).find((kind) => packages[kind] && !existing.packages.some((p) => p.kind === kind)) : undefined;
     if (existing && !missingKind) {
         return existing;
+    }
+
+    // a trusted publishing token can publish releases of its extension, never create or change listings
+    if (trusted) {
+        const names = Object.values(packages).filter(Boolean).join(' or ');
+        if (!existing) {
+            throw new CliError(`No listing on ${ctx.host} owns ${names}, and trusted publishing cannot create one.`, 1, [
+                'Create the listing first (`flb publish` with a personal token, or in Studio), then add a trusted publisher for this workflow in Studio → Access.',
+            ]);
+        }
+        throw new CliError(`The listing ${existing.slug} has no ${missingKind} package yet, and trusted publishing cannot add one.`, 1, [
+            'Publish this release once with a personal token (`flb publish` after `flb login`), which adds the package to the listing.',
+        ]);
     }
 
     const organization = ctx.organization(organizationFlag);
