@@ -2,71 +2,174 @@ name: Fleetbase CLI CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main, v2]
     tags:
       - 'v*'
   pull_request:
-    branches: [ main, 'release/v*', 'dev-v*' ]
+    branches: [main, v2, 'release/v*', 'dev-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
+  test:
+    name: Unit tests (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
-
     strategy:
+      fail-fast: false
       matrix:
-        node-version: [18.x]  # Build on Node.js 18
-
+        node-version: ['20.x', '22.x']
     steps:
-    - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-    - name: Setup Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v2
-      with:
-        node-version: ${{ matrix.node-version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
 
-    - name: Install Dependencies
-      run: npm install
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Installer tests
+        run: npm test -w @fleetbase/installer
+
+  e2e:
+    name: End-to-end against the Registry Service
+    runs-on: ubuntu-latest
+    needs: test
+    env:
+      PHP_CLI_SERVER_WORKERS: 4
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the Registry Service (v2)
+        uses: actions/checkout@v4
+        with:
+          repository: fleetbase/registry
+          ref: v2
+          path: registry
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, intl, bcmath, zip, pdo_sqlite, sqlite3, phar, zlib
+          coverage: none
+          tools: composer:v2
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: composer-${{ runner.os }}-8.3-${{ hashFiles('registry/composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-8.3-
+
+      - name: Prepare the service
+        working-directory: registry
+        # artisan serve reads .env, not the job environment; checks run in the request (sync queue)
+        run: |
+          composer install --no-interaction --prefer-dist --no-progress
+          cp .env.example .env
+          sed -i 's/^QUEUE_CONNECTION=.*/QUEUE_CONNECTION=sync/; s/^MAIL_MAILER=.*/MAIL_MAILER=log/' .env
+          php artisan key:generate --ansi
+          touch database/database.sqlite
+          php artisan migrate --seed --force
+          php artisan registry:seed --seed-release
+
+      - name: Start the service
+        working-directory: registry
+        run: |
+          php artisan serve --host=127.0.0.1 --port=8000 > storage/logs/serve.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/up > /dev/null && exit 0; sleep 1; done
+          cat storage/logs/serve.log; exit 1
+
+      - name: Install and build the CLI
+        run: |
+          npm ci
+          npm run build
+
+      - name: End-to-end
+        env:
+          FLB_E2E_REGISTRY: http://127.0.0.1:8000
+          FLB_E2E_SERVICE: ${{ github.workspace }}/registry
+        run: bash test/e2e/run.sh
+
+      - name: Service logs
+        if: failure()
+        working-directory: registry
+        run: |
+          cat storage/logs/serve.log || true
+          tail -n 200 storage/logs/laravel.log || true
 
   npm_publish:
-    needs: build
+    needs: [test, e2e]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
-    - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-    - name: Setup Node.js 18.x
-      uses: actions/setup-node@v2
-      with:
-        node-version: 18.x
-
-    - name: Install Dependencies
-      run: npm install
-
-    - name: Set up npm
-      run: echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_AUTH_TOKEN }}" > ~/.npmrc
-
-    - name: Publish
-      run: npm publish --access public
-      
-  github_publish:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - uses: actions/checkout@v2
-
-      - name: Setup Node.js 18.x
-        uses: actions/setup-node@v2
+      - uses: actions/setup-node@v4
         with:
-          node-version: 18.x
+          node-version: '22.x'
+          registry-url: 'https://registry.npmjs.org'
 
-      - name: Install Dependencies
-        run: npm install
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Configure npm for GitHub registry
+      - name: Publish @fleetbase/cli
+        run: npm publish --access public --tag ${{ contains(github.ref_name, '-') && 'next' || 'latest' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }}
+
+      - name: Publish @fleetbase/installer when its version is new
         run: |
-          echo "@fleetbase:registry=https://npm.pkg.github.com/" >> ~/.npmrc
-          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> ~/.npmrc
+          version=$(node -p "require('./packages/installer/package.json').version")
+          if npm view "@fleetbase/installer@$version" version >/dev/null 2>&1; then
+            echo "@fleetbase/installer@$version is already published"
+          else
+            npm publish -w @fleetbase/installer --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }}
 
-      - name: Publish to GitHub registry
+  github_publish:
+    needs: [test, e2e]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@fleetbase'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Publish to GitHub Packages
         run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
