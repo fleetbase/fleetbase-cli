@@ -1,0 +1,10 @@
+{
+    "name": "Starter",
+    "version": "0.0.1",
+    "description": "Starter Extension for Fleetbase",
+    "repository": "https://github.com/fleetbase/starter-extension",
+    "license": "AGPL-3.0-or-later",
+    "author": "Fleetbase Pte Ltd <hello@fleetbase.io>",
+    "engine": "package.json",
+    "api": "composer.json"
+}

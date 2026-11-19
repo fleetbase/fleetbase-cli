@@ -1,8 +1,8 @@
 {
     "name": "@fleetbase/cli",
-    "version": "0.0.7",
-    "description": "CLI tool for managing Fleetbase Extensions",
-    "repository": "https://github.com/fleetbase/fleetbase",
+    "version": "2.0.0-beta.0",
+    "description": "Fleetbase CLI: publish extensions to the Fleetbase Extensions Registry and manage installs on your instances",
+    "repository": "https://github.com/fleetbase/fleetbase-cli",
     "license": "AGPL-3.0-or-later",
     "author": "Fleetbase Pte Ltd <hello@fleetbase.io>",
     "keywords": [
@@ -10,24 +10,41 @@
         "fleetbase-cli",
         "fleetbase-extensions"
     ],
-    "main": "index.js",
+    "type": "module",
     "bin": {
-        "flb": "./index.js"
+        "flb": "dist/bin/flb.js"
     },
+    "files": [
+        "dist",
+        "README.md",
+        "LICENSE.md"
+    ],
+    "engines": {
+        "node": ">=20.10"
+    },
+    "workspaces": [
+        "packages/*"
+    ],
     "scripts": {
-        "test": "echo \"Error: no test specified\" && exit 1"
+        "build": "tsc -p tsconfig.build.json",
+        "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+        "typecheck": "tsc -p tsconfig.json --noEmit",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "test:e2e": "npm run build && bash test/e2e/run.sh",
+        "prepack": "npm run clean && npm run build"
     },
     "dependencies": {
-        "axios": "^1.7.3",
-        "chalk": "^5.3.0",
-        "commander": "^11.1.0",
+        "commander": "^14.0.3",
         "enquirer": "^2.4.1",
-        "form-data": "^4.0.1",
-        "fs-extra": "^11.2.0",
-        "glob-promise": "^6.0.7",
-        "lodash": "^4.17.21",
-        "npm-cli-login": "^1.0.0",
-        "semver": "^7.6.3",
+        "picocolors": "^1.1.1",
+        "semver": "^7.7.2",
         "tar": "^7.4.3"
+    },
+    "devDependencies": {
+        "@types/node": "^22.15.0",
+        "@types/semver": "^7.7.0",
+        "typescript": "^5.9.3",
+        "vitest": "^3.2.4"
     }
 }
