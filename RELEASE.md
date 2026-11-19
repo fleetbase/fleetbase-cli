@@ -7,6 +7,7 @@
 - `flb init` scaffolds from fleetbase/starter-extension with your organization's package names, PHP namespace and an `extension.json` with `compat` ranges.
 - `flb build` writes the engine tarball, the Composer api archive and, with `--prebuilt --console <path>`, the prebuilt engine dist from ember-core's `build-engine-release`; `flb bump` keeps the three manifests on one version.
 - `flb publish [--channel beta] [--submit]` creates the listing, uploads the release and streams the registry checks; `flb release status|submit|withdraw|yank|list` follow it through review.
+- Trusted publishing from GitHub Actions: `flb publish` exchanges the job's OIDC token for a short-lived, publish-only token when a trusted publisher is configured on the listing. The composite action `fleetbase/fleetbase-cli/action@v2` installs the CLI, publishes and exposes the release id, version and status.
 - `flb search`, `flb info`: the public catalog.
 - `flb listing list|show|update|categories`: complete the catalog listing from the terminal.
 - `flb instance code|register|status|updates`: instance registration from a server shell; `register --path|--docker` hands the code to the instance (`registry:register`) so its token never leaves it.

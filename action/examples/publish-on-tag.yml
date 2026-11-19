@@ -1,0 +1,43 @@
+# Publishes the extension to the Fleetbase Extensions Registry when a version tag is pushed.
+#
+# Copy to .github/workflows/release.yml in the extension's repository. Trusted publishing needs
+# no secret: in Studio → Access, add a trusted publisher for this repository with
+#   repository   owner/repo
+#   workflow     release.yml            (this file's name)
+#   environment  release                (optional; remove `environment:` below if you do not use one)
+#   refs         refs/tags/v*
+# The listing must exist first (publish the first release with `flb publish` after `flb login`).
+#
+# Bump the version in extension.json, package.json and composer.json (`flb bump patch`), commit,
+# then `git tag v1.2.3 && git push --tags`.
+
+name: Publish to the Fleetbase Registry
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write # lets the job request the GitHub OIDC token flb exchanges
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+
+      # Only needed when package.json has prepare/prepack scripts that need dependencies;
+      # then also set `install-command` below (e.g. `pnpm install --frozen-lockfile`).
+      # - uses: pnpm/action-setup@v4
+
+      - name: Publish
+        id: publish
+        uses: fleetbase/fleetbase-cli/action@v2
+        with:
+          submit: true
+          notes: Release ${{ github.ref_name }}
+
+      - name: Result
+        run: echo "Release ${{ steps.publish.outputs.release-id }} (${{ steps.publish.outputs.version }}) is ${{ steps.publish.outputs.status }}"

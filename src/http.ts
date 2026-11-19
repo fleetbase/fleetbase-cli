@@ -39,6 +39,8 @@ export interface RequestOptions {
 
 export interface ClientOptions {
     token?: string;
+    /** resolves the token for each request instead of a fixed `token` (short-lived tokens that refresh) */
+    tokenProvider?: () => Promise<string>;
     fetch?: typeof fetch;
     timeoutMs?: number;
 }
@@ -46,18 +48,20 @@ export interface ClientOptions {
 export class RegistryClient {
     readonly baseUrl: string;
     private readonly token?: string;
+    private readonly tokenProvider?: () => Promise<string>;
     private readonly fetchImpl: typeof fetch;
     private readonly timeoutMs: number;
 
     constructor(baseUrl: string, options: ClientOptions = {}) {
         this.baseUrl = baseUrl.replace(/\/+$/, '');
         this.token = options.token;
+        this.tokenProvider = options.tokenProvider;
         this.fetchImpl = options.fetch || globalThis.fetch;
         this.timeoutMs = options.timeoutMs ?? 60_000;
     }
 
     get hasToken(): boolean {
-        return Boolean(this.token);
+        return Boolean(this.token || this.tokenProvider);
     }
 
     withToken(token: string | undefined): RegistryClient {
@@ -79,7 +83,7 @@ export class RegistryClient {
             Accept: 'application/json',
             'User-Agent': `flb/${VERSION} node/${process.versions.node}`,
         };
-        const token = options.token ?? (options.auth === false ? undefined : this.token);
+        const token = options.token ?? (options.auth === false ? undefined : this.tokenProvider ? await this.tokenProvider() : this.token);
         if (token) {
             headers.Authorization = `Bearer ${token}`;
         }

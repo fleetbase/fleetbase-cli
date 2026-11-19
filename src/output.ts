@@ -2,14 +2,16 @@ import pc from 'picocolors';
 
 /**
  * Terminal output. Everything a command prints goes through here so tokens can be
- * redacted in one place: personal (flbp_), instance (flbi_) and session (flbs_) tokens
- * are masked in every message unless a command prints one on purpose with `secret()`.
+ * redacted in one place: personal (flbp_), instance (flbi_), session (flbs_) and trusted
+ * publishing (flbt_) tokens are masked in every message unless a command prints one on
+ * purpose with `secret()`, and JWTs (GitHub OIDC tokens) are masked whole.
  */
 
-const TOKEN_PATTERN = /\b(flb[pis]_)[A-Za-z0-9]{8,}/g;
+const TOKEN_PATTERN = /\b(flb[pist]_)[A-Za-z0-9]{8,}/g;
+const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+/g;
 
 export function redact(text: string): string {
-    return text.replace(TOKEN_PATTERN, (match, prefix: string) => `${prefix}…${match.slice(-4)}`);
+    return text.replace(TOKEN_PATTERN, (match, prefix: string) => `${prefix}…${match.slice(-4)}`).replace(JWT_PATTERN, '<jwt>');
 }
 
 export interface Writer {

@@ -231,6 +231,13 @@ export function resolveRegistry(flag: string | undefined, config: Config): strin
 
 export const PERSONAL_TOKEN = /^flbp_[A-Za-z0-9]{20,}$/;
 export const INSTANCE_TOKEN = /^flbi_[A-Za-z0-9]{20,}$/;
+/** short-lived, publish-only token from trusted publishing (`POST /v1/auth/oidc/github`) */
+export const TRUSTED_PUBLISHING_TOKEN = /^flbt_[A-Za-z0-9]{20,}$/;
+
+/** Tokens the Registry Service accepts from a publisher. */
+export function isServiceToken(token: string): boolean {
+    return PERSONAL_TOKEN.test(token) || TRUSTED_PUBLISHING_TOKEN.test(token);
+}
 
 export interface StoredToken {
     token: string;
@@ -243,12 +250,12 @@ export interface StoredToken {
 export function getToken(config: Config, registry: string): StoredToken | null {
     const env = process.env.FLB_TOKEN?.trim();
     if (env) {
-        return { token: env, source: 'env', legacy: !PERSONAL_TOKEN.test(env) };
+        return { token: env, source: 'env', legacy: !isServiceToken(env) };
     }
 
     const token = config.tokens?.[hostKey(registry)];
     if (typeof token === 'string' && token !== '') {
-        return { token, source: 'config', legacy: !PERSONAL_TOKEN.test(token) };
+        return { token, source: 'config', legacy: !isServiceToken(token) };
     }
 
     return null;
