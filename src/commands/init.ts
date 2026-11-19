@@ -17,7 +17,8 @@ import { CliError, slugify, splitList, studly } from '../util.js';
 
 export const STARTER_TEMPLATE = 'https://github.com/fleetbase/starter-extension.git';
 /** console 0.7.x and core-api 1.6+ are what the starter targets today */
-export const DEFAULT_COMPAT = { console: '>=0.7.0 <0.8.0', api: '^1.6' };
+// Registry v2 instances run console 0.8.x (Laravel 12) or later and core-api 2.x.
+export const DEFAULT_COMPAT = { console: '>=0.8.0 <0.10.0', api: '^2.0' };
 export const INITIAL_VERSION = '0.1.0';
 
 const SKIP = new Set(['.git', 'node_modules', 'server_vendor', 'vendor', 'dist', 'tmp', '.php-cs-fixer.cache']);

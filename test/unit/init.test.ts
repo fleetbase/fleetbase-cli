@@ -31,7 +31,7 @@ describe('init', () => {
         expect(await flb('init', dir, '--name', 'Fleet Insights', '--organization', 'acme', '--template', STARTER, '--yes', '--no-git', '--author', 'Acme Ltd <dev@acme.test>', '--keywords', 'fleet,analytics', '--console', '>=0.7.60 <0.8.0')).toBe(0);
 
         const manifest = JSON.parse(read(dir, 'extension.json'));
-        expect(manifest).toMatchObject({ name: 'Fleet Insights', version: '0.1.0', engine: 'package.json', api: 'composer.json', compat: { console: '>=0.7.60 <0.8.0', api: '^1.6' }, keywords: ['fleet', 'analytics'] });
+        expect(manifest).toMatchObject({ name: 'Fleet Insights', version: '0.1.0', engine: 'package.json', api: 'composer.json', compat: { console: '>=0.7.60 <0.8.0', api: '^2.0' }, keywords: ['fleet', 'analytics'] });
 
         const pkg = JSON.parse(read(dir, 'package.json'));
         expect(pkg).toMatchObject({ name: '@acme/fleet-insights-engine', version: '0.1.0', fleetbase: { route: 'fleet-insights' }, author: 'Acme Ltd <dev@acme.test>' });
