@@ -86,7 +86,7 @@ run init --name "E2E Insights" --template "$TEMPLATE" --yes --author "E2E Develo
 cd "$WORK/e2e-insights"
 grep -q "\"name\": \"@${USERNAME}/e2e-insights-engine\"" package.json || fail "package name"
 grep -q "\"name\": \"${USERNAME}/e2e-insights-api\"" composer.json || fail "composer name"
-grep -q '"console": ">=0.7.0 <0.8.0"' extension.json || fail "compat.console"
+grep -q '"console": ">=0.8.0 <0.10.0"' extension.json || fail "compat.console"
 run build
 [ -f .fleetbase/release.json ] || fail "no release.json"
 # list to files first: under pipefail, grep -q closing the pipe early makes GNU tar fail
