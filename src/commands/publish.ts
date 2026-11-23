@@ -4,7 +4,8 @@ import type { Command } from 'commander';
 import { readRelease, type ReleaseFile } from '../build.js';
 import { type Context, context, currentFetch } from '../context.js';
 import { ApiError, type RegistryClient } from '../http.js';
-import { type LoadedExtension, loadExtension } from '../manifest.js';
+import { fieldLabel, listingPayload } from '../listing-manifest.js';
+import { type LoadedExtension, loadExtension, ManifestError } from '../manifest.js';
 import { assertGithubOidcAvailable, githubOidcEnv, inGithubActions, PERMISSION_HINT, TrustedPublishing } from '../oidc.js';
 import { colors, formatBytes, log } from '../output.js';
 import { isSettled, listingFor, printCheck, reviewReasons, statusLabel, watchRelease } from '../releases.js';
@@ -127,8 +128,9 @@ export async function publish(ctx: Context, dir: string, opts: PublishOptions): 
         log.step(`Trusted publishing to ${exchanged.extension?.slug || auth.trusted.extension}${publisher?.repository ? ` as ${publisher.repository}${publisher.workflow ? ` (${publisher.workflow})` : ''}` : ''}`);
     }
 
-    // 3. the listing
+    // 3. the listing, and extension.json's listing block on it
     const listing = await ensureListing(ctx, client, ext, opts.organization, Boolean(auth.trusted));
+    await applyListingBlock(ctx, client, ext, listing);
 
     // 4. the upload
     const form = new FormData();
@@ -182,6 +184,38 @@ export async function publish(ctx: Context, dir: string, opts: PublishOptions): 
         process.exitCode = 1;
     }
     return final;
+}
+
+/**
+ * Apply extension.json's `listing` block (`PUT …/listing-manifest`), so the fields it sets win over Studio.
+ * Without a block, fields an earlier publish managed are handed back to Studio. Runs before the upload: a
+ * block the registry refuses stops the publish.
+ */
+export async function applyListingBlock(ctx: Context, client: RegistryClient, ext: LoadedExtension, listing: PublisherExtension): Promise<string[]> {
+    const { body, problems } = listingPayload(ext.manifest, ext.root);
+    if (problems.length) {
+        throw new ManifestError(problems, ext.manifestPath);
+    }
+    if (body === null && !(listing.manifest_fields?.length)) {
+        return [];
+    }
+    let updated: PublisherExtension;
+    try {
+        updated = await client.put<PublisherExtension>(`v1/publisher/extensions/${encodeURIComponent(listing.slug)}/listing-manifest`, body ?? {});
+    } catch (error) {
+        if (error instanceof ApiError && error.status === 422) {
+            const fields = Object.entries(error.fields || {}).map(([field, messages]) => `listing ${fieldLabel(field)}: ${(messages as string[]).join(' ')}`);
+            throw new CliError(`The registry refused extension.json's listing block: ${error.message}`, 1, [...fields, ...(error.fields?.category ? ['List the category slugs with `flb listing categories`.'] : [])]);
+        }
+        throw error;
+    }
+    const managed = updated?.manifest_fields ?? Object.keys(body ?? {});
+    if (body === null && !ctx.json) {
+        log.step(`Handed ${listing.manifest_fields!.length} listing field(s) back to Studio (extension.json has no listing block)`);
+    } else if (!ctx.json) {
+        log.step(`Applied extension.json's listing: ${managed.map(fieldLabel).join(', ')}`);
+    }
+    return managed;
 }
 
 async function ensureListing(ctx: Context, client: RegistryClient, ext: LoadedExtension, organizationFlag: string | undefined, trusted: boolean): Promise<PublisherExtension> {

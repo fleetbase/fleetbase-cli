@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import semver from 'semver';
+import { type ListingBlock, listingPayload, validateListing } from './listing-manifest.js';
 import { CliError } from './util.js';
 
 /**
@@ -43,6 +44,8 @@ export interface ExtensionManifest {
     repository?: string;
     license?: string;
     author?: string;
+    /** The catalog listing, managed from this file (see listing-manifest.ts). */
+    listing?: ListingBlock;
     [key: string]: unknown;
 }
 
@@ -164,6 +167,7 @@ export function validateManifest(manifest: Record<string, any>): string[] {
     if (manifest.keywords !== undefined && (!Array.isArray(manifest.keywords) || manifest.keywords.some((k: unknown) => typeof k !== 'string' || k === '' || (k as string).length > 64) || manifest.keywords.length > 20)) {
         problems.push('`keywords` must be at most 20 strings of 1 to 64 characters.');
     }
+    problems.push(...validateListing(manifest.listing));
     return problems;
 }
 
@@ -217,6 +221,11 @@ export function loadExtension(start = '.'): LoadedExtension {
             }
             api = { name: json.name, version: json.version, file, json };
         }
+    }
+
+    // Files the listing block names (description: README.md) must exist and fit.
+    if (problems.length === 0 && manifest.listing !== undefined) {
+        problems.push(...listingPayload(manifest, root).problems);
     }
 
     if (manifest.compat === undefined || manifest.compat.console === undefined || manifest.compat.api === undefined) {

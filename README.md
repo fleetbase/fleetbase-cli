@@ -21,7 +21,7 @@ cd fleet-insights && pnpm install
 flb build                    # engine and api archives in .fleetbase/build/<version>
 flb publish                  # creates the draft listing, uploads, follows the registry checks
 flb listing show             # what the listing still needs before the first submit
-flb listing update --subtitle "…" --category telematics --icon chart-line …
+flb listing update --subtitle "…" --category telematics --icon chart-line …   # or: extension.json's listing block
 flb release submit           # submit for review (or publish --submit next time)
 flb release status           # review state, reasons and history
 ```
@@ -45,7 +45,7 @@ price and permissions are published as soon as their checks pass.
 | `flb bump <version\|patch\|minor\|major\|prerelease>` | One version in extension.json, package.json and composer.json |
 | `flb publish [--channel beta] [--submit]` | Creates the draft listing if needed, uploads the release, streams the check results. In GitHub Actions it can use trusted publishing (`--oidc`, see below) |
 | `flb release list\|status\|submit\|withdraw\|yank` | Release lifecycle, by `rel_` id or by version inside the extension |
-| `flb listing list\|show\|update\|categories` | The catalog listing: subtitle, description, category, tags, URLs, icon (`--file listing.json` for several at once); shows what is still needed before a first release can be submitted |
+| `flb listing list\|show\|update\|pull\|categories` | The catalog listing: subtitle, description, category, tags, URLs, icon (`--file listing.json` for several at once); shows what is still needed before a first release can be submitted. `pull` writes the current listing into extension.json's `listing` block |
 | `flb search [query]` / `flb info <slug>` | The public catalog |
 | `flb instance code` | A one-time registration code to paste into an instance |
 | `flb instance register --path <fleetbase>\|--docker` | Registers the instance itself: mints a code and pipes it to `php artisan registry:register --code-stdin`, so the instance token stays in the instance's encrypted settings. Without a target (or with `--store-token`) the CLI exchanges the code and keeps the token in the config file. Registering an instance again rotates it on the service rather than creating a second one: the instance (or, with `--store-token`, the config entry for the same `--path` or `--host`) sends its current token, the service also matches the same host in the same organization, and the instance keeps its id, installs and licence seats with a new token ("Re-registered …"). Under Octane the new registration applies to the running workers without a reload |
@@ -146,6 +146,39 @@ the api version must be one Composer can install), then writes to
 
 The prebuilt dist needs an ember-core with runtime engines
 ([fleetbase/ember-core#99](https://github.com/fleetbase/ember-core/pull/99)) in the console.
+
+## The listing in extension.json
+
+`extension.json` can carry the catalog listing in a `listing` block, so the repository is the
+source of truth and CI publishes a complete extension:
+
+```json
+"listing": {
+    "subtitle": "LocoNav telematics for Fleet-Ops",
+    "description": "docs/description.md",
+    "promotional_text": "README.md",
+    "category": "telematics",
+    "tags": ["telematics", "loconav"],
+    "languages": ["en"],
+    "icon": "satellite-dish",
+    "hosting": "both",
+    "copyright": "Fleetbase Pte Ltd",
+    "links": { "website": "https://…", "repo": "https://…", "support": "https://…", "privacy": "https://…", "terms": "https://…" }
+}
+```
+
+- `description` and `promotional_text` take the text itself or the relative path of a Markdown
+  or text file in the extension, which the CLI reads.
+- The top-level `keywords` and `repository` fill `tags` and `links.repo` when the block leaves
+  them out.
+- `flb build` validates the block (and that the files it names exist). `flb publish` applies it
+  on every publish, before the upload, trusted publishing included. The file wins for the fields
+  it sets: Studio shows them read-only and `flb listing update` refuses to change them. Fields it
+  leaves out stay editable in Studio, and removing a field hands it back.
+- The listing name comes from `name` when the listing is created. Price, visibility and media
+  (icon image, screenshots) are set in Studio only.
+- `flb listing pull` writes an existing listing into the block to start from; `flb init` starts it
+  with the subtitle.
 
 ## Registering an instance
 

@@ -138,6 +138,10 @@ export class RegistryClient {
         return this.request<T>('PATCH', path, { ...options, json: json ?? {} });
     }
 
+    put<T = unknown>(path: string, json?: unknown, options: RequestOptions = {}): Promise<T> {
+        return this.request<T>('PUT', path, { ...options, json: json ?? {} });
+    }
+
     delete<T = unknown>(path: string, options?: RequestOptions): Promise<T> {
         return this.request<T>('DELETE', path, options);
     }

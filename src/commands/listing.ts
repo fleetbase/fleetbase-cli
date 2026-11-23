@@ -4,6 +4,8 @@ import type { Command } from 'commander';
 import { type Context, context } from '../context.js';
 import { ApiError } from '../http.js';
 import { colors, log, table } from '../output.js';
+import { blockFromListing, fieldLabel } from '../listing-manifest.js';
+import { findExtensionRoot } from '../manifest.js';
 import { resolveSlug } from '../releases.js';
 import type { PublisherExtension } from '../types.js';
 import { CliError, splitList } from '../util.js';
@@ -92,6 +94,22 @@ export function register(program: Command): void {
         .option('--json', 'print the updated listing as JSON')
         .action((opts, command: Command) => updateListing(context(command), opts));
 
+    target(listing.command('pull').description("Write the listing into extension.json's listing block, so the repository manages it from the next publish"))
+        .option('--dry-run', 'print the block instead of writing it')
+        .action(async (opts, command: Command) => {
+            const ctx = context(command);
+            const client = ctx.authed();
+            const slug = await resolveSlug(ctx, client, opts.extension);
+            const current = await client.get<PublisherExtension>(`v1/publisher/extensions/${encodeURIComponent(slug)}`);
+            const written = pullListing(current, process.cwd(), Boolean(opts.dryRun));
+            if (ctx.json || opts.dryRun) {
+                log.json(written.block);
+                return;
+            }
+            log.success(`Wrote the listing of ${current.slug} to ${path.relative(process.cwd(), written.file) || 'extension.json'} (${Object.keys(written.block).join(', ') || 'nothing set yet'}).`);
+            log.info('  `flb publish` applies it from now on; Studio shows those fields read-only.');
+        });
+
     listing
         .command('categories')
         .description('Category slugs for --category')
@@ -106,6 +124,28 @@ export function register(program: Command): void {
             }
             log.line(table(rows, [{ header: 'SLUG', value: (c) => c.slug }, { header: 'NAME', value: (c) => c.name }, { header: 'EXTENSIONS', value: (c) => c.extensions_count ?? '' }]));
         });
+}
+
+/**
+ * Replace extension.json's `listing` block with the listing's current values, keeping every other key, its
+ * order and the file's four-space layout.
+ */
+export function pullListing(listing: PublisherExtension, cwd = process.cwd(), dryRun = false): { file: string; block: Record<string, unknown> } {
+    const root = findExtensionRoot(cwd);
+    const file = path.join(root, 'extension.json');
+    const raw = fs.readFileSync(file, 'utf8');
+    let manifest: Record<string, unknown>;
+    try {
+        manifest = JSON.parse(raw);
+    } catch (error) {
+        throw new CliError(`${file} is not valid JSON (${(error as Error).message}).`);
+    }
+    const block = blockFromListing(listing, (manifest.listing as Record<string, unknown>) ?? {}) as Record<string, unknown>;
+    if (!dryRun) {
+        const next = { ...manifest, listing: block };
+        fs.writeFileSync(file, `${JSON.stringify(next, null, 4)}\n`);
+    }
+    return { file, block };
 }
 
 /** The PATCH body from --file and the flags; "" clears a field. */
@@ -161,8 +201,12 @@ async function updateListing(ctx: Context, opts: Record<string, unknown>): Promi
     try {
         updated = await client.patch<PublisherExtension>(`v1/publisher/extensions/${encodeURIComponent(slug)}`, changes);
     } catch (error) {
-        if (error instanceof ApiError && error.status === 422 && error.fields?.category) {
+        if (error instanceof ApiError && error.status === 422 && error.fields?.category && !(error.fields.category as string[]).join(' ').includes('extension.json')) {
             throw new CliError(error.message, 1, ['List the category slugs with `flb listing categories`.']);
+        }
+        if (error instanceof ApiError && error.status === 422 && Object.values(error.fields || {}).some((messages) => (messages as string[]).join(' ').includes('extension.json'))) {
+            const managed = Object.keys(error.fields || {}).filter((field) => (error.fields![field] as string[]).join(' ').includes('extension.json'));
+            throw new CliError(`${managed.map(fieldLabel).join(', ')} ${managed.length === 1 ? 'is' : 'are'} set in extension.json's listing block.`, 1, ['Change it in extension.json and run `flb publish`, or remove it from the block to edit it here.']);
         }
         throw error;
     }
@@ -210,9 +254,10 @@ function printListing(listing: PublisherExtension): void {
         ['packages', listing.packages.map((p) => `${p.kind} ${p.name}`).join(', ')],
         ['price', listing.price ? (listing.price.model === 'free' ? 'free' : `${(listing.price.amount / 100).toFixed(2)} ${listing.price.currency}`) : null],
     ];
+    const managed = new Set((listing.manifest_fields ?? []).map(fieldLabel));
     for (const [label, value] of rows) {
         if (value) {
-            log.line(`  ${label.padEnd(10)} ${value}`);
+            log.line(`  ${label.padEnd(10)} ${value}${managed.has(label === 'tos' ? 'terms' : label) ? colors.dim('  (extension.json)') : ''}`);
         }
     }
     if (listing.promotional_text) {

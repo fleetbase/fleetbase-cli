@@ -338,6 +338,9 @@ export async function scaffold(root: string, names: Names, details: ScaffoldDeta
         ...(details.repository ? { repository: details.repository } : {}),
         license: typeof existing.license === 'string' ? existing.license : 'AGPL-3.0-or-later',
         ...(author ? { author } : {}),
+        // The catalog listing, managed from this file (`flb publish` applies it; Studio shows these fields
+        // read-only). Start small: add category, links, icon and the rest here, or set them in Studio.
+        ...(details.description && [...details.description].length <= 255 ? { listing: { subtitle: details.description } } : {}),
     };
     const problems = validateManifest(manifest);
     if (problems.length) {

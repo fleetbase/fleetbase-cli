@@ -10,6 +10,7 @@
 - Trusted publishing from GitHub Actions: `flb publish` exchanges the job's OIDC token for a short-lived, publish-only token when a trusted publisher is configured on the listing. The composite action `fleetbase/fleetbase-cli/action@v2` installs the CLI, publishes and exposes the release id, version and status.
 - `flb search`, `flb info`: the public catalog.
 - `flb listing list|show|update|categories`: complete the catalog listing from the terminal.
+- `extension.json` can carry the catalog listing in a `listing` block (subtitle, description or a Markdown file, category, tags, languages, icon, hosting, copyright, links). `flb publish` applies it on every publish, trusted publishing included; the registry then shows those fields read-only in Studio. `flb listing pull` writes an existing listing into the block.
 - `flb instance code|register|status|updates`: instance registration from a server shell; `register --path|--docker` hands the code to the instance (`registry:register`) so its token never leaves it.
 - `flb install|update|uninstall` run registry-bridge's queued installer (`php artisan registry:*`) locally or in a docker compose service and follow the job.
 - `flb doctor` checks config, token, connectivity, instances and local tools.

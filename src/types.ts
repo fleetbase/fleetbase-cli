@@ -68,6 +68,8 @@ export interface PublisherExtension {
     copyright?: string | null;
     fa_icon?: string | null;
     price?: { model: string; amount: number; currency: string } | null;
+    /** Listing fields extension.json sets (its `listing` block); Studio shows them read-only. */
+    manifest_fields?: string[];
 }
 
 export interface ReleaseCheck {
