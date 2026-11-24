@@ -1,0 +1,179 @@
+name: Publish a Fleetbase extension
+description: Build and publish a Fleetbase extension to the Fleetbase Extensions Registry with `flb publish`, using trusted publishing (GitHub OIDC) or a token.
+author: Fleetbase
+branding:
+  icon: upload-cloud
+  color: blue
+
+inputs:
+  path:
+    description: Extension directory (the one with extension.json), relative to the workspace.
+    required: false
+    default: '.'
+  registry:
+    description: Registry Service URL.
+    required: false
+    default: 'https://registry.fleetbase.io'
+  channel:
+    description: Release channel, stable or beta. Default is the channel in extension.json, else stable.
+    required: false
+    default: ''
+  submit:
+    description: Submit the release for review as soon as its checks pass.
+    required: false
+    default: 'true'
+  wait:
+    description: Follow the registry checks (and the submit) until the release settles. With false the step returns after the upload.
+    required: false
+    default: 'true'
+  timeout:
+    description: How long to follow the checks (90s, 15m, 1h).
+    required: false
+    default: '15m'
+  notes:
+    description: Release notes.
+    required: false
+    default: ''
+  notes-file:
+    description: File with the release notes, relative to the workspace.
+    required: false
+    default: ''
+  token:
+    description: 'A personal token (flbp_, publish scope) to use instead of trusted publishing. Leave empty to exchange the job''s GitHub OIDC token, which needs `permissions: id-token: write`.'
+    required: false
+    default: ''
+  oidc-audience:
+    description: Audience for the GitHub OIDC token. Default is the registry's host name, which is what the registry expects unless it was configured otherwise.
+    required: false
+    default: ''
+  install-command:
+    description: Command run in `path` before publishing, e.g. `pnpm install --frozen-lockfile`. Needed only when `npm pack` runs prepare/prepack scripts that need the extension's dependencies.
+    required: false
+    default: ''
+  args:
+    description: Extra arguments for `flb publish`, e.g. `--ignore-scripts` or `--rebuild`.
+    required: false
+    default: ''
+  cli-version:
+    description: Version (or range or dist-tag) of @fleetbase/cli to install from npm, or `source` to build the CLI from this action's own checkout.
+    required: false
+    default: '^2.0.0-0'
+  node-version:
+    description: Node.js version for actions/setup-node. Set to an empty string to use the Node already on the runner (20.10 or later).
+    required: false
+    default: '22'
+
+outputs:
+  release-id:
+    description: The release id (rel_…).
+    value: ${{ steps.publish.outputs.release-id }}
+  version:
+    description: The released version.
+    value: ${{ steps.publish.outputs.version }}
+  status:
+    description: The release status when the step finished (uploaded, checking, failed_checks, submitted, in_review, published, …).
+    value: ${{ steps.publish.outputs.status }}
+  channel:
+    description: The release channel.
+    value: ${{ steps.publish.outputs.channel }}
+  extension:
+    description: The listing slug.
+    value: ${{ steps.publish.outputs.extension }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      if: inputs.node-version != ''
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Install the Fleetbase CLI
+      id: cli
+      shell: bash
+      env:
+        CLI_VERSION: ${{ inputs.cli-version }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        if [ "$CLI_VERSION" = "source" ]; then
+          cli_root="$(cd "$ACTION_PATH/.." && pwd)"
+          (cd "$cli_root" && npm ci --no-audit --no-fund && npm run build)
+          bin="$cli_root/dist/bin/flb.js"
+        else
+          npm install --global --no-audit --no-fund "@fleetbase/cli@${CLI_VERSION:-latest}"
+          bin="$(npm root --global)/@fleetbase/cli/dist/bin/flb.js"
+        fi
+        echo "flb $(node "$bin" --version)"
+        echo "bin=$bin" >> "$GITHUB_OUTPUT"
+
+    - name: Install the extension's dependencies
+      if: inputs.install-command != ''
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      env:
+        INSTALL_COMMAND: ${{ inputs.install-command }}
+      run: bash -euo pipefail -c "$INSTALL_COMMAND"
+
+    - name: Publish
+      id: publish
+      shell: bash
+      env:
+        FLB_BIN: ${{ steps.cli.outputs.bin }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_REGISTRY: ${{ inputs.registry }}
+        INPUT_CHANNEL: ${{ inputs.channel }}
+        INPUT_SUBMIT: ${{ inputs.submit }}
+        INPUT_WAIT: ${{ inputs.wait }}
+        INPUT_TIMEOUT: ${{ inputs.timeout }}
+        INPUT_NOTES: ${{ inputs.notes }}
+        INPUT_NOTES_FILE: ${{ inputs.notes-file }}
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_OIDC_AUDIENCE: ${{ inputs.oidc-audience }}
+      run: |
+        set -euo pipefail
+        # a token input overrides FLB_TOKEN; without one, FLB_TOKEN from the job (if any) is kept
+        if [ -n "$INPUT_TOKEN" ]; then
+          echo "::add-mask::$INPUT_TOKEN"
+          export FLB_TOKEN="$INPUT_TOKEN"
+        fi
+        if [ -n "$INPUT_OIDC_AUDIENCE" ]; then
+          export FLB_OIDC_AUDIENCE="$INPUT_OIDC_AUDIENCE"
+        fi
+        unset INPUT_TOKEN
+
+        args=(publish "$INPUT_PATH" --json --timeout "$INPUT_TIMEOUT")
+        [ -n "$INPUT_REGISTRY" ] && args+=(--registry "$INPUT_REGISTRY")
+        [ -n "$INPUT_CHANNEL" ] && args+=(--channel "$INPUT_CHANNEL")
+        [ "$INPUT_SUBMIT" = "true" ] && args+=(--submit)
+        [ "$INPUT_WAIT" = "false" ] && args+=(--no-wait)
+        [ -n "$INPUT_NOTES" ] && args+=(--notes "$INPUT_NOTES")
+        [ -n "$INPUT_NOTES_FILE" ] && args+=(--notes-file "$INPUT_NOTES_FILE")
+        if [ -n "$INPUT_ARGS" ]; then
+          read -r -a extra <<< "$INPUT_ARGS"
+          args+=("${extra[@]}")
+        fi
+
+        result="$RUNNER_TEMP/flb-publish-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+        set +e
+        node "$FLB_BIN" "${args[@]}" > "$result"
+        code=$?
+        set -e
+
+        # the release JSON is on stdout whenever the upload happened, even when checks failed
+        node -e '
+          const fs = require("fs");
+          let release;
+          try { release = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(0); }
+          if (!release || !release.id) process.exit(0);
+          const outputs = { "release-id": release.id, version: release.version, status: release.status, channel: release.channel, extension: release.extension && release.extension.slug };
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(outputs).map(([k, v]) => `${k}=${v ?? ""}\n`).join(""));
+          const checks = (release.checks || []).map((c) => `| ${c.skipped ? "–" : c.passed ? "✓" : "✗"} | ${c.check} | ${(c.summary || "").replace(/\|/g, "\\|")} |`);
+          const summary = [`### ${outputs.extension}@${release.version}: ${String(release.status).replace(/_/g, " ")}`, "", `Release \`${release.id}\` on the ${release.channel} channel.`];
+          if (checks.length) summary.push("", "| | Check | Summary |", "| --- | --- | --- |", ...checks);
+          if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.join("\n") + "\n");
+        ' "$result"
+        rm -f "$result"
+        exit "$code"
