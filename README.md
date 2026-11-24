@@ -147,6 +147,24 @@ the api version must be one Composer can install), then writes to
 The prebuilt dist needs an ember-core with runtime engines
 ([fleetbase/ember-core#99](https://github.com/fleetbase/ember-core/pull/99)) in the console.
 
+### Compatibility in extension.json
+
+`compat` says which Fleetbase versions a release works with, so instances are only offered
+releases they can run:
+
+```json
+"compat": {
+    "console": ">=0.8.0 <0.10.0",
+    "api": "^2.0",
+    "extensions": { "@fleetbase/fleetops-engine": ">=0.6" }
+}
+```
+
+- `console` and `api`: the console and core-api versions this release works with.
+- `extensions`: other extensions this one needs, with the versions it works with (package name →
+  version range, at most 20).
+- `flb build` checks every range; the release upload carries the whole file to the registry.
+
 ## The listing in extension.json
 
 `extension.json` can carry the catalog listing in a `listing` block, so the repository is the

@@ -16,7 +16,10 @@ import { CliError, slugify, splitList, studly } from '../util.js';
  */
 
 export const STARTER_TEMPLATE = 'https://github.com/fleetbase/starter-extension.git';
-/** Registry v2 instances run console 0.8.x (Laravel 12) or later and core-api 2.x, as fleetbase/starter-extension now does */
+/**
+ * Registry v2 instances run console 0.8.x (Laravel 12) or later and core-api 2.x, as fleetbase/starter-extension now does.
+ * compat.extensions (not set here) names other extensions this one needs, with the versions it works with.
+ */
 export const DEFAULT_COMPAT = { console: '>=0.8.0 <0.10.0', api: '^2.0' };
 export const INITIAL_VERSION = '0.1.0';
 
@@ -379,6 +382,7 @@ export async function scaffold(root: string, names: Names, details: ScaffoldDeta
             '```',
             '',
             `Compatibility is declared in \`extension.json\`: console \`${details.compat.console}\`, api \`${details.compat.api}\`.`,
+            'Add `compat.extensions` for other extensions this one needs, with the versions it works with (for example `{ "@fleetbase/fleetops-engine": ">=0.6" }`).',
             '',
         ].join('\n'),
     );

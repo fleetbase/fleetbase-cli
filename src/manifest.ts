@@ -38,7 +38,8 @@ export interface ExtensionManifest {
     description?: string;
     engine?: string;
     api?: string;
-    compat?: { console?: string; api?: string };
+    /** Version ranges this release works with: the console, core-api and other extensions it needs (package name → range). */
+    compat?: { console?: string; api?: string; extensions?: Record<string, string> };
     channel?: 'stable' | 'beta';
     keywords?: string[];
     repository?: string;
@@ -123,6 +124,32 @@ export function validRange(range: string, kind: 'console' | 'api'): boolean {
     return semver.validRange(normalized) !== null;
 }
 
+/** Most other extensions one release may name in `compat.extensions`. */
+export const MAX_COMPAT_EXTENSIONS = 20;
+
+/** `compat.extensions`: other extensions this one needs (package name → the versions it works with). */
+export function validateCompatExtensions(extensions: unknown): string[] {
+    if (extensions === undefined) {
+        return [];
+    }
+    if (!extensions || typeof extensions !== 'object' || Array.isArray(extensions)) {
+        return ['`compat.extensions` must be an object of extension package names and version ranges, for example { "@fleetbase/fleetops-engine": ">=0.6" }.'];
+    }
+    const entries = Object.entries(extensions as Record<string, unknown>);
+    const problems: string[] = [];
+    if (entries.length > MAX_COMPAT_EXTENSIONS) {
+        problems.push(`\`compat.extensions\` names ${entries.length} extensions; at most ${MAX_COMPAT_EXTENSIONS}.`);
+    }
+    for (const [name, range] of entries) {
+        if (!NPM_NAME.test(name)) {
+            problems.push(`\`compat.extensions\` key "${name}" is not an extension package name (for example @fleetbase/fleetops-engine).`);
+        } else if (typeof range !== 'string' || !validRange(range, 'console')) {
+            problems.push(`\`compat.extensions.${name}\` "${range}" is not a valid version range.`);
+        }
+    }
+    return problems;
+}
+
 export function validateManifest(manifest: Record<string, any>): string[] {
     const problems: string[] = [];
     if (typeof manifest.name !== 'string' || manifest.name.trim() === '' || manifest.name.length > 120) {
@@ -146,13 +173,14 @@ export function validateManifest(manifest: Record<string, any>): string[] {
     }
     if (manifest.compat !== undefined) {
         if (!manifest.compat || typeof manifest.compat !== 'object' || Array.isArray(manifest.compat)) {
-            problems.push('`compat` must be an object with `console` and/or `api` ranges.');
+            problems.push('`compat` must be an object with `console`, `api` and/or `extensions` ranges.');
         } else {
             for (const key of Object.keys(manifest.compat)) {
-                if (key !== 'console' && key !== 'api') {
-                    problems.push(`\`compat.${key}\` is not allowed (only console and api).`);
+                if (key !== 'console' && key !== 'api' && key !== 'extensions') {
+                    problems.push(`\`compat.${key}\` is not allowed (only console, api and extensions).`);
                 }
             }
+            problems.push(...validateCompatExtensions(manifest.compat.extensions));
             for (const kind of ['console', 'api'] as const) {
                 const range = manifest.compat[kind];
                 if (range !== undefined && (typeof range !== 'string' || !validRange(range, kind))) {

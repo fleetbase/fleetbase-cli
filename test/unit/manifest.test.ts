@@ -25,6 +25,20 @@ describe('validateManifest (extension.schema.json rules)', () => {
         expect(validateManifest({ ...valid, channel: 'nightly' }).join()).toMatch(/channel/);
     });
 
+    it('checks compat.extensions: package names and version ranges, at most 20', () => {
+        expect(validateManifest({ ...valid, compat: { ...valid.compat, extensions: { '@fleetbase/fleetops-engine': '>=0.6', 'storefront-engine': '^0.4 || ^0.5' } } })).toEqual([]);
+        expect(validateManifest({ ...valid, compat: { extensions: {} } })).toEqual([]);
+
+        expect(validateManifest({ ...valid, compat: { extensions: ['@fleetbase/fleetops-engine'] } }).join()).toMatch(/compat.extensions` must be an object/);
+        expect(validateManifest({ ...valid, compat: { extensions: { 'Fleet Ops': '>=0.6' } } }).join()).toMatch(/key "Fleet Ops" is not an extension package name/);
+        expect(validateManifest({ ...valid, compat: { extensions: { '@fleetbase/fleetops-engine': 'latest' } } }).join()).toMatch(/compat.extensions.@fleetbase\/fleetops-engine` "latest" is not a valid version range/);
+        expect(validateManifest({ ...valid, compat: { extensions: { '@fleetbase/fleetops-engine': '' } } }).join()).toMatch(/not a valid version range/);
+        expect(validateManifest({ ...valid, compat: { extensions: { '@fleetbase/fleetops-engine': 6 } } }).join()).toMatch(/not a valid version range/);
+        expect(validateManifest({ ...valid, compat: { extensions: { a: '>=' + '1'.repeat(100) } } }).join()).toMatch(/not a valid version range/);
+        const many = Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`ext-${i}`, '^1.0']));
+        expect(validateManifest({ ...valid, compat: { extensions: many } })).toEqual(['`compat.extensions` names 21 extensions; at most 20.']);
+    });
+
     it('parses npm and Composer ranges', () => {
         expect(validRange('>=0.7.0 <0.8.0', 'console')).toBe(true);
         expect(validRange('^1.6', 'api')).toBe(true);
