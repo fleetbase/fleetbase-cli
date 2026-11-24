@@ -19,9 +19,13 @@ export interface ListingBlock {
     hosting?: 'cloud' | 'self_hosted' | 'both';
     copyright?: string;
     links?: { website?: string; repo?: string; support?: string; privacy?: string; terms?: string };
+    /** "What you'll get": short plain-text points. */
+    highlights?: string[];
+    /** "After you install": short plain-text steps, in order. */
+    setup_steps?: string[];
 }
 
-export const LISTING_KEYS = ['subtitle', 'description', 'promotional_text', 'category', 'tags', 'languages', 'icon', 'hosting', 'copyright', 'links'] as const;
+export const LISTING_KEYS = ['subtitle', 'description', 'promotional_text', 'category', 'tags', 'languages', 'icon', 'hosting', 'copyright', 'links', 'highlights', 'setup_steps'] as const;
 export const LINK_KEYS = ['website', 'repo', 'support', 'privacy', 'terms'] as const;
 const HOSTINGS = ['cloud', 'self_hosted', 'both'];
 const TEXT_LIMITS: Record<string, number> = { subtitle: 255, description: 20000, promotional_text: 20000, category: 191, copyright: 255, icon: 64 };
@@ -31,6 +35,10 @@ const LINK_FIELDS: Record<(typeof LINK_KEYS)[number], string> = { website: 'webs
 const FILE_FIELDS = ['description', 'promotional_text'] as const;
 const FILE_EXTENSIONS = /\.(md|markdown|txt)$/i;
 const HTTP_URL = /^https?:\/\/[^\s]+$/i;
+/** Plain-text lists: most items, most characters per item. */
+export const LIST_FIELDS = { highlights: 'points', setup_steps: 'steps' } as const;
+const LIST_MAX_ITEMS = 5;
+const LIST_ITEM_LENGTH = 120;
 
 /** A value that names a file in the extension (`README.md`, `docs/overview.md`) rather than holding text. */
 export function isFileReference(value: unknown): value is string {
@@ -71,6 +79,12 @@ export function validateListing(listing: unknown): string[] {
         const value = block[key];
         if (value !== undefined && (!Array.isArray(value) || value.length > max || value.some((item) => typeof item !== 'string' || item === '' || item.length > length) || new Set(value).size !== value.length)) {
             problems.push(`\`listing.${key}\` must be at most ${max} different strings of 1 to ${length} characters.`);
+        }
+    }
+    for (const [key, noun] of Object.entries(LIST_FIELDS)) {
+        const value = block[key];
+        if (value !== undefined && (!Array.isArray(value) || value.length > LIST_MAX_ITEMS || value.some((item) => typeof item !== 'string' || item.trim() === '' || [...item].length > LIST_ITEM_LENGTH))) {
+            problems.push(`\`listing.${key}\` must be at most ${LIST_MAX_ITEMS} ${noun}, each a short text of 1 to ${LIST_ITEM_LENGTH} characters.`);
         }
     }
     if (block.links !== undefined) {
@@ -135,8 +149,10 @@ export function listingPayload(manifest: Record<string, any>, root: string): { b
     if (tags !== undefined) {
         body.tags = tags;
     }
-    if (block.languages !== undefined) {
-        body.languages = block.languages;
+    for (const key of ['languages', 'highlights', 'setup_steps'] as const) {
+        if (block[key] !== undefined) {
+            body[key] = block[key];
+        }
     }
     if (block.icon !== undefined) {
         body.fa_icon = block.icon;
@@ -179,6 +195,8 @@ export function blockFromListing(listing: PublisherExtension, current: Record<st
     set('icon', listing.fa_icon);
     set('hosting', listing.hosting);
     set('copyright', listing.copyright);
+    set('highlights', listing.highlights);
+    set('setup_steps', listing.setup_steps);
     const links: Record<string, string> = {};
     for (const key of LINK_KEYS) {
         const value = listing[LINK_FIELDS[key] as keyof PublisherExtension];

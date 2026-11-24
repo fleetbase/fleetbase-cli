@@ -260,6 +260,16 @@ function printListing(listing: PublisherExtension): void {
             log.line(`  ${label.padEnd(10)} ${value}${managed.has(label === 'tos' ? 'terms' : label) ? colors.dim('  (extension.json)') : ''}`);
         }
     }
+    for (const [field, label, numbered] of [
+        ['highlights', 'highlights', false],
+        ['setup_steps', 'setup', true],
+    ] as const) {
+        const items = listing[field];
+        if (items?.length) {
+            log.line(`  ${label.padEnd(10)}${managed.has(field) ? colors.dim(' (extension.json)') : ''}`);
+            items.forEach((item, index) => log.line(`    ${numbered ? `${index + 1}.` : '-'} ${item}`));
+        }
+    }
     if (listing.promotional_text) {
         log.line(`  promo      ${listing.promotional_text}`);
     }

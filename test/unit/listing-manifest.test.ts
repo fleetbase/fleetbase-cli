@@ -54,6 +54,18 @@ describe('validateListing', () => {
         expect(validateManifest({ name: 'X', version: '1.0.0', engine: 'package.json', listing: { hosting: 'moon' } })).toEqual(['`listing.hosting` must be cloud, self_hosted or both.']);
     });
 
+    it('checks highlights and setup_steps against the registry limits', () => {
+        expect(validateListing({ highlights: ['Live vehicle positions', 'Trip history'], setup_steps: ['Open Settings', 'Paste your API key'] })).toEqual([]);
+        expect(validateListing({ highlights: ['x'.repeat(120)], setup_steps: [] })).toEqual([]);
+
+        const tooMany = validateListing({ highlights: ['1', '2', '3', '4', '5', '6'] });
+        expect(tooMany).toEqual(['`listing.highlights` must be at most 5 points, each a short text of 1 to 120 characters.']);
+        expect(validateListing({ setup_steps: ['x'.repeat(121)] })).toEqual(['`listing.setup_steps` must be at most 5 steps, each a short text of 1 to 120 characters.']);
+        expect(validateListing({ highlights: ['ok', '   '] }).join()).toMatch(/listing.highlights/);
+        expect(validateListing({ setup_steps: [''] }).join()).toMatch(/listing.setup_steps/);
+        expect(validateListing({ highlights: 'one point', setup_steps: [1] })).toHaveLength(2);
+    });
+
     it('tells a file reference from text', () => {
         expect(isFileReference('README.md')).toBe(true);
         expect(isFileReference('docs/overview.markdown')).toBe(true);
@@ -80,6 +92,8 @@ describe('listingPayload', () => {
 
         // The block's own tags and repo win over keywords and repository.
         expect(listingPayload({ keywords: ['x'], repository: 'https://github.com/acme/old', listing: { tags: ['y'], links: { repo: 'https://github.com/acme/new' } } }, root).body).toEqual({ tags: ['y'], repo_url: 'https://github.com/acme/new' });
+        // Highlights and setup steps pass through as they are.
+        expect(listingPayload({ listing: { highlights: ['Live map'], setup_steps: ['Open Settings', 'Paste the key'] } }, root).body).toEqual({ highlights: ['Live map'], setup_steps: ['Open Settings', 'Paste the key'] });
         // Without a block nothing is managed, keywords or not.
         expect(listingPayload({ keywords: ['x'] }, root).body).toBeNull();
     });
@@ -143,6 +157,19 @@ describe('publish with a listing block', () => {
         expect(second.requests.some((r) => r.method === 'PUT')).toBe(false);
     });
 
+    it('sends highlights and setup steps with the block', async () => {
+        setManifest(root, { listing: { subtitle: 'Charts', highlights: ['Live map', 'Trip history'], setup_steps: ['Open Settings'] } });
+        const { requests } = fakeRegistry({
+            'GET /v1/publisher/extensions': [listing()],
+            'PUT /v1/publisher/extensions/acme-insights/listing-manifest': (request) => listing({ manifest_fields: Object.keys(request.body) }),
+            'POST /v1/publisher/extensions/acme-insights/releases': upload,
+        });
+        const out = capture();
+        expect(await flb('publish', root, '--no-wait')).toBe(0);
+        expect(requests.find((r) => r.method === 'PUT')!.body).toEqual({ subtitle: 'Charts', highlights: ['Live map', 'Trip history'], setup_steps: ['Open Settings'] });
+        expect(out.stderr).toMatch(/Applied extension.json's listing: subtitle, highlights, setup_steps/);
+    });
+
     it('stops before the upload when the registry refuses the block', async () => {
         setManifest(root, { listing: { category: 'nope' } });
         const { requests } = fakeRegistry({
@@ -195,6 +222,26 @@ describe('flb listing pull and update', () => {
             links: { website: 'https://acme.test', support: 'https://acme.test/support', terms: 'https://acme.test/terms' },
         });
         expect(blockFromListing(current, { description: 'README.md' }).description).toBe('README.md');
+        // Highlights and setup steps only when there are some.
+        expect(blockFromListing(listing({ highlights: [], setup_steps: null }))).toEqual({});
+        expect(blockFromListing(listing({ highlights: ['Live map'], setup_steps: ['Open Settings', 'Paste the key'] }))).toEqual({ highlights: ['Live map'], setup_steps: ['Open Settings', 'Paste the key'] });
+    });
+
+    it('pull writes highlights and setup steps', () => {
+        pullListing(listing({ subtitle: 'Charts', highlights: ['Live map'], setup_steps: ['Open Settings'] }), root);
+        const written = JSON.parse(fs.readFileSync(path.join(root, 'extension.json'), 'utf8'));
+        expect(written.listing).toEqual({ subtitle: 'Charts', highlights: ['Live map'], setup_steps: ['Open Settings'] });
+        expect(() => loadExtension(root)).not.toThrow();
+    });
+
+    it('show lists highlights and numbers the setup steps, marking managed ones', async () => {
+        fakeRegistry({
+            'GET /v1/publisher/extensions/acme-insights': listing({ highlights: ['Live map', 'Trip history'], setup_steps: ['Open Settings', 'Paste the key'], manifest_fields: ['highlights'] }),
+        });
+        const out = capture();
+        expect(await flb('listing', 'show', '--extension', 'acme-insights')).toBe(0);
+        expect(out.stdout).toMatch(/highlights {0,2} \(extension.json\)\n {4}- Live map\n {4}- Trip history/);
+        expect(out.stdout).toMatch(/setup\s*\n {4}1\. Open Settings\n {4}2\. Paste the key/);
     });
 
     it('pull writes the block into extension.json and keeps the other keys and layout', () => {

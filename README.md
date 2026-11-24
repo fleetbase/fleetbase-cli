@@ -181,12 +181,16 @@ source of truth and CI publishes a complete extension:
     "icon": "satellite-dish",
     "hosting": "both",
     "copyright": "Fleetbase Pte Ltd",
-    "links": { "website": "https://…", "repo": "https://…", "support": "https://…", "privacy": "https://…", "terms": "https://…" }
+    "links": { "website": "https://…", "repo": "https://…", "support": "https://…", "privacy": "https://…", "terms": "https://…" },
+    "highlights": ["Live vehicle positions on the Fleet-Ops map", "Trip history and alerts"],
+    "setup_steps": ["Open Settings → LocoNav", "Paste your LocoNav API key"]
 }
 ```
 
 - `description` and `promotional_text` take the text itself or the relative path of a Markdown
   or text file in the extension, which the CLI reads.
+- `highlights` ("What you'll get") and `setup_steps` ("After you install", shown numbered) are
+  plain text, at most 5 items of up to 120 characters each.
 - The top-level `keywords` and `repository` fill `tags` and `links.repo` when the block leaves
   them out.
 - `flb build` validates the block (and that the files it names exist). `flb publish` applies it

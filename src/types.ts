@@ -68,6 +68,9 @@ export interface PublisherExtension {
     copyright?: string | null;
     fa_icon?: string | null;
     price?: { model: string; amount: number; currency: string } | null;
+    /** "What you'll get" points and "After you install" steps (plain text). */
+    highlights?: string[] | null;
+    setup_steps?: string[] | null;
     /** Listing fields extension.json sets (its `listing` block); Studio shows them read-only. */
     manifest_fields?: string[];
 }
