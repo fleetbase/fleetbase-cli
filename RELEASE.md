@@ -1,4 +1,4 @@
-> v2.0.0-beta.0 ~ "CLI v2 for the Fleetbase Extensions Registry"
+> v2.0.0 ~ "CLI v2 for the Fleetbase Extensions Registry"
 
 ---
 ## What's New
