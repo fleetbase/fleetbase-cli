@@ -105,13 +105,18 @@ SLUG="$(grep -oE 'Created the draft listing [a-z0-9-]+' "$OUT" | awk '{print $NF
 REL1="$(grep -m1 -oE 'rel_[a-z0-9]+' "$OUT")"
 
 step "complete the listing with flb listing, then submit"
+# flb init starts extension.json's listing block with the subtitle, and its keywords become the tags:
+# publish applied both, so they show as set in extension.json and flb listing update leaves them alone
 run listing show
-contains "still needed"; contains "The listing needs a subtitle."
+contains "still needed"; contains "The listing needs a category."
+contains "E2E Insights extension for Fleetbase"; contains "(extension.json)"
+run --expect 1 listing update --subtitle "Changed outside extension.json"
+contains "set in extension.json"
 run listing categories
 contains "telematics"
 run --expect 1 listing update --category no-such-category
-run listing update --subtitle "End-to-end test extension" --description "Built and published by the CLI end-to-end test." \
-    --promotional-text "Proves flb init, build and publish" --tags e2e,cli --copyright "E2E" \
+run listing update --description "Built and published by the CLI end-to-end test." \
+    --promotional-text "Proves flb init, build and publish" --copyright "E2E" \
     --website https://example.com --support https://example.com/support --privacy https://example.com/privacy
 contains "still needed"; contains "an icon"
 printf '{"fa_icon": "flask", "category": "telematics"}' > "$WORK/listing.json"

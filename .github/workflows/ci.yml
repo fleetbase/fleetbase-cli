@@ -55,11 +55,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check out the Registry Service (v2)
+      # The registry's release branch: CLI v2 ships with Registry Service v2.0.0, and the CLI's newer commands
+      # (the extension.json listing, compat.extensions) need endpoints the old `v2` branch never had.
+      - name: Check out the Registry Service (release/v2.0.0)
         uses: actions/checkout@v4
         with:
           repository: fleetbase/registry
-          ref: v2
+          ref: release/v2.0.0
           path: registry
 
       - uses: actions/setup-node@v4
